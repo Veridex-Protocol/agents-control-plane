@@ -1,0 +1,53 @@
+{
+  "name": "@veridex/agents-control-plane",
+  "version": "0.1.0",
+  "description": "Enterprise control plane SDK for the Veridex Agent Runtime — policy packs, trace retention, approval workflows, audit export, multi-tenant governance",
+  "license": "MIT",
+  "author": "Veridex Team",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "@veridex/agents": ">=0.1.0"
+  },
+  "devDependencies": {
+    "@veridex/agents": "workspace:*",
+    "tsup": "^8.0.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.0"
+  },
+  "keywords": [
+    "veridex",
+    "agents",
+    "control-plane",
+    "enterprise",
+    "policy",
+    "audit",
+    "governance"
+  ]
+}
