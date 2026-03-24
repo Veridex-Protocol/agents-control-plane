@@ -46,6 +46,13 @@ export type DeploymentMode =
   | 'private-cloud'
   | 'managed';
 
+/** Access roles for remote control-plane operators and services. */
+export type ControlPlaneRole =
+  | 'admin'
+  | 'operator'
+  | 'approver'
+  | 'viewer';
+
 // ── Policy Packs ──
 
 /** A policy pack — a named set of policy rules that can be applied to tenants/agents. */
@@ -194,6 +201,67 @@ export interface EvidenceBundle {
   policyDecisions: unknown[];
   /** Approval decisions included */
   approvalDecisions: unknown[];
+}
+
+// ── Service Auth and Remote Deployment ──
+
+/** Persisted API token metadata for remote control-plane access. */
+export interface ControlPlaneAuthToken {
+  /** Unique token identifier */
+  id: string;
+  /** Human-readable token name */
+  name: string;
+  /** SHA-256 hash of the bearer token */
+  tokenHash: string;
+  /** Access role */
+  role: ControlPlaneRole;
+  /** Optional tenant allow-list */
+  tenantIds?: string[];
+  /** Optional metadata */
+  metadata?: Record<string, unknown>;
+  /** Creation timestamp */
+  createdAt: number;
+  /** Last use timestamp */
+  lastUsedAt?: number;
+}
+
+/** Config for the remote control-plane service process. */
+export interface ControlPlaneServiceConfig {
+  /** Persistence backend for metadata and traces. */
+  storageBackend?: 'file' | 'postgres';
+  /** Host interface to bind the HTTP server to. */
+  host?: string;
+  /** HTTP port to listen on. */
+  port?: number;
+  /** Directory used for persistent metadata and traces. */
+  dataDir?: string;
+  /** Require bearer auth for all routes except health checks. */
+  authRequired?: boolean;
+  /** Header name used to pass tenant scope. */
+  tenantHeader?: string;
+  /** Bootstrap tokens that are accepted before tokens are provisioned in storage. */
+  bootstrapTokens?: Array<
+    | string
+    | {
+        token: string;
+        name?: string;
+        role?: ControlPlaneRole;
+        tenantIds?: string[];
+      }
+  >;
+  /** Interval for approval timeout processing. */
+  approvalSweepIntervalMs?: number;
+  /** Interval for trace retention sweeps. */
+  tracePurgeIntervalMs?: number;
+  /** Default trace retention window for ingested traces. */
+  traceRetentionDays?: number;
+  /** Postgres configuration for managed multi-instance deployments. */
+  postgres?: {
+    connectionString: string;
+    ssl?: boolean;
+    metadataTableName?: string;
+    tracesTableName?: string;
+  };
 }
 
 // ── Control Plane Client ──

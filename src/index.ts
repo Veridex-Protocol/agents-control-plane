@@ -19,6 +19,7 @@ export type {
   Tenant,
   TenantConfig,
   DeploymentMode,
+  ControlPlaneRole,
   PolicyPack,
   PolicyRuleDefinition,
   TraceRecord,
@@ -26,7 +27,9 @@ export type {
   ApprovalWorkflow,
   ApprovalEscalationStep,
   EvidenceBundle,
+  ControlPlaneAuthToken,
   ControlPlaneConfig,
+  ControlPlaneServiceConfig,
 } from './types';
 
 // ── Policy Packs ──
@@ -36,6 +39,23 @@ export type { CreatePolicyPackOptions } from './policy-packs';
 // ── Trace Store ──
 export { TraceStore, InMemoryTraceStore } from './trace-store';
 export type { TraceStoreBackend, IngestOptions } from './trace-store';
+export {
+  JSONFileMetadataStore,
+  FileTraceStoreBackend,
+  PostgresMetadataStore,
+  PostgresTraceStoreBackend,
+  MetadataConflictError,
+  createAuthTokenRecord,
+  sha256Hex,
+} from './persistence';
+export type {
+  ControlPlaneMetadataSnapshot,
+  ControlPlaneMetadataStore,
+  TraceStoreMetricsBackend,
+  PostgresMetadataStoreConfig,
+  PostgresTraceStoreBackendConfig,
+  PostgresQueryExecutor,
+} from './persistence';
 
 // ── Approval Workflows ──
 export { ApprovalWorkflowEngine } from './approval-workflows';
@@ -55,3 +75,14 @@ export type { CreateTenantOptions } from './tenant-manager';
 
 // ── Control Plane Client ──
 export { ControlPlaneClient } from './control-plane';
+export { ControlPlaneService } from './service';
+export type {
+  ApprovalStartOptions,
+  ApprovalVoteOptions,
+  TokenIssueOptions,
+  ServiceAuthResult,
+  ControlPlaneServicePersistence,
+} from './service';
+export { createControlPlaneApp, startControlPlaneServer } from './server';
+export { RemoteControlPlaneClient } from './remote-client';
+export type { RemoteControlPlaneClientConfig } from './remote-client';

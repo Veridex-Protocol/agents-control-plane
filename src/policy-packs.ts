@@ -114,4 +114,17 @@ export class PolicyPackManager {
       }
     }
   }
+
+  /** Replace all loaded policy packs, preserving immutability flags from the snapshot. */
+  load(packs: PolicyPack[]): void {
+    this.packs.clear();
+    for (const pack of packs) {
+      this.packs.set(pack.id, { ...pack });
+    }
+  }
+
+  /** Snapshot the current policy pack state for persistence. */
+  snapshot(): PolicyPack[] {
+    return Array.from(this.packs.values()).map((pack) => ({ ...pack }));
+  }
 }

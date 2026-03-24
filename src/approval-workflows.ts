@@ -243,4 +243,42 @@ export class ApprovalWorkflowEngine {
     }
     return cleared;
   }
+
+  /** Replace workflows from a persisted snapshot. */
+  loadWorkflows(workflows: ApprovalWorkflow[]): void {
+    this.workflows.clear();
+    for (const workflow of workflows) {
+      this.workflows.set(workflow.id, {
+        ...workflow,
+        escalationChain: workflow.escalationChain.map((step) => ({ ...step })),
+      });
+    }
+  }
+
+  /** Replace active approvals from a persisted snapshot. */
+  loadApprovals(approvals: ActiveApproval[]): void {
+    this.activeApprovals.clear();
+    for (const approval of approvals) {
+      this.activeApprovals.set(approval.id, {
+        ...approval,
+        approvals: approval.approvals.map((vote) => ({ ...vote })),
+      });
+    }
+  }
+
+  /** Snapshot workflows for durable persistence. */
+  snapshotWorkflows(): ApprovalWorkflow[] {
+    return Array.from(this.workflows.values()).map((workflow) => ({
+      ...workflow,
+      escalationChain: workflow.escalationChain.map((step) => ({ ...step })),
+    }));
+  }
+
+  /** Snapshot active approvals for durable persistence. */
+  snapshotApprovals(): ActiveApproval[] {
+    return Array.from(this.activeApprovals.values()).map((approval) => ({
+      ...approval,
+      approvals: approval.approvals.map((vote) => ({ ...vote })),
+    }));
+  }
 }

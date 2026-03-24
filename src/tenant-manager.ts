@@ -100,4 +100,21 @@ export class TenantManager {
   count(): number {
     return this.tenants.size;
   }
+
+  /** Replace all loaded tenants from a persisted snapshot. */
+  load(tenants: Tenant[]): void {
+    this.tenants.clear();
+    for (const tenant of tenants) {
+      this.tenants.set(tenant.id, { ...tenant });
+    }
+  }
+
+  /** Snapshot tenants for durable persistence. */
+  snapshot(): Tenant[] {
+    return Array.from(this.tenants.values()).map((tenant) => ({
+      ...tenant,
+      config: { ...tenant.config },
+      metadata: tenant.metadata ? { ...tenant.metadata } : undefined,
+    }));
+  }
 }
