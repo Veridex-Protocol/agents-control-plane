@@ -39,6 +39,30 @@ export interface TenantConfig {
   deploymentMode?: DeploymentMode;
 }
 
+// ── Workspace ──
+
+/** A workspace scoped beneath a tenant. */
+export interface Workspace {
+  /** Unique workspace identifier */
+  id: string;
+  /** Parent tenant */
+  tenantId?: string;
+  /** Human-readable name */
+  name: string;
+  /** Lifecycle status */
+  status: 'active' | 'suspended' | 'archived';
+  /** Optional description */
+  description?: string;
+  /** Workspace configuration */
+  config?: Record<string, unknown>;
+  /** Metadata */
+  metadata?: Record<string, unknown>;
+  /** Creation timestamp */
+  createdAt: number;
+  /** Last update timestamp */
+  updatedAt: number;
+}
+
 /** Supported deployment modes. */
 export type DeploymentMode =
   | 'local'
@@ -280,4 +304,438 @@ export interface ControlPlaneConfig {
   localTraceRetention?: boolean;
   /** Trace retention TTL in days (local mode) */
   traceRetentionDays?: number;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Workforce OS Resource Types
+// ══════════════════════════════════════════════════════════════════
+
+// ── Agent Manifest ──
+
+/** Status of an agent in the fleet registry. */
+export type AgentManifestStatus = 'active' | 'draining' | 'disabled' | 'archived';
+
+/** A registered agent manifest in the fleet registry. */
+export interface AgentManifest {
+  /** Unique agent identifier */
+  id: string;
+  /** Human-readable name */
+  name: string;
+  /** Agent version */
+  version: string;
+  /** Status in the fleet */
+  status: AgentManifestStatus;
+  /** Tenant this manifest belongs to */
+  tenantId?: string;
+  /** Workspace scope when pinned below tenant level */
+  workspaceId?: string;
+  /** Capabilities this agent advertises */
+  capabilities: string[];
+  /** Model configuration label */
+  modelLabel?: string;
+  /** Policy pack IDs bound to this agent */
+  policyPackIds?: string[];
+  /** Metadata */
+  metadata?: Record<string, unknown>;
+  /** Registration timestamp */
+  registeredAt: number;
+  /** Last heartbeat timestamp */
+  lastHeartbeatAt?: number;
+  /** Optimistic revision for updates */
+  manifestRevision?: number;
+}
+
+// ── Workspace Resource ──
+
+/** Status of a generic workspace resource. */
+export type WorkspaceResourceStatus = 'active' | 'archived' | 'deleted';
+
+export interface ResourceVersion {
+  version: number;
+  updatedAt: number;
+  updatedBy?: string;
+  proposalId?: string;
+}
+
+/** A typed workspace resource managed by the control plane. */
+export interface WorkspaceResource {
+  /** Unique resource identifier */
+  id: string;
+  /** Resource type (e.g., 'config', 'secret_ref', 'dataset', 'model_endpoint') */
+  resourceType: string;
+  /** Human-readable name */
+  name: string;
+  /** Current status */
+  status: WorkspaceResourceStatus;
+  /** Tenant scope */
+  tenantId?: string;
+  /** Workspace scope */
+  workspaceId?: string;
+  /** Version or revision counter */
+  version: number;
+  /** Structured version metadata for optimistic concurrency and review flows */
+  resourceVersion?: ResourceVersion;
+  /** Structured payload — schema depends on resourceType */
+  data: Record<string, unknown>;
+  /** Tags for filtering */
+  tags?: string[];
+  /** Metadata */
+  metadata?: Record<string, unknown>;
+  /** Attached evidence references */
+  evidenceRefs?: Array<Record<string, unknown>>;
+  /** Confidence score if this resource was machine-derived */
+  confidence?: number;
+  /** Review status for governed mutation flows */
+  reviewStatus?: 'unreviewed' | 'auto_accepted' | 'review_required' | 'approved' | 'rejected';
+  /** Actor that created the resource */
+  createdBy?: string;
+  /** Actor that last updated the resource */
+  updatedBy?: string;
+  /** Creation timestamp */
+  createdAt: number;
+  /** Last update timestamp */
+  updatedAt: number;
+}
+
+// ── Task ──
+
+/** Task lifecycle states. */
+export type TaskStatus =
+  | 'pending'
+  | 'assigned'
+  | 'running'
+  | 'blocked'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+/** Priority levels for tasks. */
+export type TaskPriority = 'critical' | 'high' | 'normal' | 'low';
+
+/** A decomposed unit of work assigned to an agent or human. */
+export interface Task {
+  /** Unique task identifier */
+  id: string;
+  /** Parent task ID for sub-tasks */
+  parentId?: string;
+  /** Tenant scope */
+  tenantId?: string;
+  /** Workspace scope */
+  workspaceId?: string;
+  /** Task title */
+  title: string;
+  /** Task description / instructions */
+  description: string;
+  /** Current status */
+  status: TaskStatus;
+  /** Priority level */
+  priority: TaskPriority;
+  /** Assigned agent or operator identifier */
+  assigneeId?: string;
+  /** Lease owner for deterministic queue handling */
+  leaseOwner?: string;
+  /** Lease expiry timestamp */
+  leaseExpiresAt?: number;
+  /** Idempotency key for upstream enqueue/retry safety */
+  idempotencyKey?: string;
+  /** Task IDs this task depends on */
+  dependsOn?: string[];
+  /** Deadline timestamp */
+  deadlineAt?: number;
+  /** Optional SLA target in milliseconds */
+  slaMs?: number;
+  /** Input data for the task */
+  input?: Record<string, unknown>;
+  /** Output data produced by the task */
+  output?: Record<string, unknown>;
+  /** Error message if failed */
+  error?: string;
+  /** Tags for filtering */
+  tags?: string[];
+  /** Metadata */
+  metadata?: Record<string, unknown>;
+  /** Optimistic version */
+  version?: number;
+  /** Creation timestamp */
+  createdAt: number;
+  /** Last update timestamp */
+  updatedAt: number;
+  /** Completion timestamp */
+  completedAt?: number;
+}
+
+// ── Deployment Revision ──
+
+/** Deployment status. */
+export type DeploymentStatus =
+  | 'pending'
+  | 'deploying'
+  | 'active'
+  | 'rolling_back'
+  | 'rolled_back'
+  | 'failed';
+
+/** A deployment revision tracking agent/config rollouts. */
+export interface DeploymentRevision {
+  /** Unique revision identifier */
+  id: string;
+  /** Tenant scope */
+  tenantId?: string;
+  /** Workspace scope */
+  workspaceId?: string;
+  /** Agent manifest ID being deployed */
+  agentManifestId: string;
+  /** Revision number (monotonically increasing per agent) */
+  revision: number;
+  /** Current status */
+  status: DeploymentStatus;
+  /** Policy pack IDs applied at this revision */
+  policyPackIds?: string[];
+  /** Configuration snapshot for this deployment */
+  config?: Record<string, unknown>;
+  /** Who initiated this deployment */
+  initiatedBy?: string;
+  /** Reason for this deployment */
+  reason?: string;
+  /** Metadata */
+  metadata?: Record<string, unknown>;
+  /** Optimistic version */
+  version?: number;
+  /** Creation timestamp */
+  createdAt: number;
+  /** When the deployment became active */
+  activatedAt?: number;
+  /** When a rollback completed, if applicable */
+  rolledBackAt?: number;
+}
+
+// ── Incident ──
+
+/** Incident severity levels. */
+export type IncidentSeverity = 'critical' | 'high' | 'medium' | 'low';
+
+/** Incident lifecycle states. */
+export type IncidentStatus =
+  | 'open'
+  | 'investigating'
+  | 'mitigated'
+  | 'resolved'
+  | 'closed';
+
+/** An operational incident tracked by the control plane. */
+export interface Incident {
+  /** Unique incident identifier */
+  id: string;
+  /** Tenant scope */
+  tenantId?: string;
+  /** Workspace scope */
+  workspaceId?: string;
+  /** Incident title */
+  title: string;
+  /** Incident description */
+  description: string;
+  /** Severity */
+  severity: IncidentSeverity;
+  /** Current status */
+  status: IncidentStatus;
+  /** Agent IDs involved */
+  agentIds?: string[];
+  /** Related run IDs */
+  runIds?: string[];
+  /** Related task IDs */
+  taskIds?: string[];
+  /** Assigned operator */
+  assigneeId?: string;
+  /** Linked deployment revisions */
+  deploymentRevisionIds?: string[];
+  /** Linked workspace resources */
+  workspaceResourceIds?: string[];
+  /** Tags */
+  tags?: string[];
+  /** Metadata */
+  metadata?: Record<string, unknown>;
+  /** Optimistic version */
+  version?: number;
+  /** Creation timestamp */
+  createdAt: number;
+  /** Last update timestamp */
+  updatedAt: number;
+  /** Resolution timestamp */
+  resolvedAt?: number;
+}
+
+// ── Eval Suite / Eval Run ──
+
+/** Status of an eval run. */
+export type EvalRunStatus = 'pending' | 'running' | 'passed' | 'failed' | 'errored';
+
+/** An evaluation suite definition. */
+export interface EvalSuite {
+  /** Unique suite identifier */
+  id: string;
+  /** Tenant scope */
+  tenantId?: string;
+  /** Workspace scope */
+  workspaceId?: string;
+  /** Suite name */
+  name: string;
+  /** Suite description */
+  description: string;
+  /** Number of scenarios in this suite */
+  scenarioCount: number;
+  /** Scenario definitions (opaque to the control plane) */
+  scenarios: Record<string, unknown>[];
+  /** Tags */
+  tags?: string[];
+  /** Metadata */
+  metadata?: Record<string, unknown>;
+  /** Optimistic version */
+  version?: number;
+  /** Creation timestamp */
+  createdAt: number;
+  /** Last update timestamp */
+  updatedAt: number;
+}
+
+/** A single evaluation run against a suite. */
+export interface EvalRun {
+  /** Unique run identifier */
+  id: string;
+  /** Tenant scope */
+  tenantId?: string;
+  /** Workspace scope */
+  workspaceId?: string;
+  /** Suite this run belongs to */
+  suiteId: string;
+  /** Agent manifest ID being evaluated */
+  agentManifestId?: string;
+  /** Current status */
+  status: EvalRunStatus;
+  /** Number of scenarios passed */
+  passed: number;
+  /** Number of scenarios failed */
+  failed: number;
+  /** Number of scenarios errored */
+  errored: number;
+  /** Total scenarios executed */
+  total: number;
+  /** Per-scenario results (opaque to the control plane) */
+  results?: Record<string, unknown>[];
+  /** Metadata */
+  metadata?: Record<string, unknown>;
+  /** Optimistic version */
+  version?: number;
+  /** Creation timestamp */
+  createdAt: number;
+  /** Completion timestamp */
+  completedAt?: number;
+}
+
+// ── Policy Binding ──
+
+/** Binds a policy pack to an agent, deployment, or tenant scope. */
+export interface PolicyBinding {
+  /** Unique binding identifier */
+  id: string;
+  /** Policy pack ID */
+  policyPackId: string;
+  /** Target type this binding applies to */
+  targetType: 'agent' | 'deployment' | 'tenant';
+  /** Target identifier */
+  targetId: string;
+  /** Workspace scope when applicable */
+  workspaceId?: string;
+  /** Binding priority (higher = checked first) */
+  priority: number;
+  /** Whether this binding is active */
+  active: boolean;
+  /** Metadata */
+  metadata?: Record<string, unknown>;
+  /** Creation timestamp */
+  createdAt: number;
+}
+
+// ── Assignment ──
+
+export type AssignmentStatus =
+  | 'queued'
+  | 'leased'
+  | 'accepted'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'released';
+
+export interface Assignment {
+  id: string;
+  tenantId?: string;
+  workspaceId?: string;
+  taskId: string;
+  assigneeId: string;
+  status: AssignmentStatus;
+  queue?: string;
+  retryCount?: number;
+  leaseOwner?: string;
+  leaseExpiresAt?: number;
+  idempotencyKey?: string;
+  deadlineAt?: number;
+  slaMs?: number;
+  metadata?: Record<string, unknown>;
+  createdAt: number;
+  updatedAt: number;
+  completedAt?: number;
+}
+
+// ── Maintenance Jobs ──
+
+export type MaintenanceJobStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface MaintenanceJob {
+  id: string;
+  tenantId?: string;
+  workspaceId?: string;
+  jobType: 'extraction' | 'reconciliation' | 'compaction' | 'drift_check' | 'recap_generation' | 'custom';
+  status: MaintenanceJobStatus;
+  trigger: 'manual' | 'cron' | 'system';
+  targetResourceIds?: string[];
+  schedule?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: number;
+  updatedAt: number;
+  completedAt?: number;
+}
+
+// ── Resource Mutation Review ──
+
+export interface MutationDecision {
+  id: string;
+  proposalId: string;
+  decidedBy: string;
+  verdict: 'approved' | 'rejected' | 'needs_revision';
+  reason?: string;
+  createdAt: number;
+}
+
+export interface ResourceMutationProposal {
+  id: string;
+  tenantId?: string;
+  workspaceId?: string;
+  resourceType: string;
+  resourceId?: string;
+  operation: 'create' | 'update' | 'delete';
+  expectedVersion?: number;
+  payload?: Record<string, unknown>;
+  reason: string;
+  proposedBy?: string;
+  status: 'pending' | 'approved' | 'rejected' | 'applied';
+  reviewMode?: 'auto' | 'policy' | 'human';
+  decisions: MutationDecision[];
+  metadata?: Record<string, unknown>;
+  createdAt: number;
+  updatedAt: number;
 }

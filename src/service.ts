@@ -28,15 +28,28 @@ import {
 import { TenantManager, type CreateTenantOptions } from './tenant-manager';
 import { TraceStore, type IngestOptions } from './trace-store';
 import type {
+  AgentManifest,
+  Assignment,
   ApprovalWorkflow,
   ControlPlaneAuthToken,
   ControlPlaneRole,
   ControlPlaneServiceConfig,
+  DeploymentRevision,
+  EvalRun,
+  EvalSuite,
+  Incident,
+  MaintenanceJob,
+  MutationDecision,
+  PolicyBinding,
   PolicyPack,
+  ResourceMutationProposal,
+  Task,
   Tenant,
   TenantConfig,
   TraceQuery,
   TraceRecord,
+  Workspace,
+  WorkspaceResource,
 } from './types';
 
 function clone<T>(value: T): T {
@@ -145,10 +158,36 @@ export class ControlPlaneService {
     this.approvalWorkflows.loadWorkflows(snapshot.approvalWorkflows);
     this.approvalWorkflows.loadApprovals(snapshot.activeApprovals);
     this.tenants.load(snapshot.tenants);
+    this._workspaces = snapshot.workspaces ?? [];
     this.authTokens = snapshot.authTokens.map((token) => ({ ...token }));
+    this._agentManifests = snapshot.agentManifests ?? [];
+    this._workspaceResources = snapshot.workspaceResources ?? [];
+    this._tasks = snapshot.tasks ?? [];
+    this._deploymentRevisions = snapshot.deploymentRevisions ?? [];
+    this._incidents = snapshot.incidents ?? [];
+    this._evalSuites = snapshot.evalSuites ?? [];
+    this._evalRuns = snapshot.evalRuns ?? [];
+    this._policyBindings = snapshot.policyBindings ?? [];
+    this._assignments = snapshot.assignments ?? [];
+    this._maintenanceJobs = snapshot.maintenanceJobs ?? [];
+    this._resourceMutationProposals = snapshot.resourceMutationProposals ?? [];
   }
 
   private authTokens: ControlPlaneAuthToken[] = [];
+
+  // Workforce OS resource storage (managed by future sub-managers)
+  private _agentManifests: AgentManifest[] = [];
+  private _workspaces: Workspace[] = [];
+  private _workspaceResources: WorkspaceResource[] = [];
+  private _tasks: Task[] = [];
+  private _deploymentRevisions: DeploymentRevision[] = [];
+  private _incidents: Incident[] = [];
+  private _evalSuites: EvalSuite[] = [];
+  private _evalRuns: EvalRun[] = [];
+  private _policyBindings: PolicyBinding[] = [];
+  private _assignments: Assignment[] = [];
+  private _maintenanceJobs: MaintenanceJob[] = [];
+  private _resourceMutationProposals: ResourceMutationProposal[] = [];
 
   private snapshot(): ControlPlaneMetadataSnapshot {
     return {
@@ -157,9 +196,21 @@ export class ControlPlaneService {
       updatedAt: Date.now(),
       authTokens: this.authTokens.map((token) => ({ ...token })),
       tenants: this.tenants.snapshot(),
+      workspaces: clone(this._workspaces),
       policyPacks: this.policyPacks.snapshot(),
       approvalWorkflows: this.approvalWorkflows.snapshotWorkflows(),
       activeApprovals: this.approvalWorkflows.snapshotApprovals(),
+      agentManifests: clone(this._agentManifests),
+      workspaceResources: clone(this._workspaceResources),
+      tasks: clone(this._tasks),
+      deploymentRevisions: clone(this._deploymentRevisions),
+      incidents: clone(this._incidents),
+      evalSuites: clone(this._evalSuites),
+      evalRuns: clone(this._evalRuns),
+      policyBindings: clone(this._policyBindings),
+      assignments: clone(this._assignments),
+      maintenanceJobs: clone(this._maintenanceJobs),
+      resourceMutationProposals: clone(this._resourceMutationProposals),
     };
   }
 
@@ -350,6 +401,69 @@ export class ControlPlaneService {
     return this.queueMutation(() => this.tenants.delete(id));
   }
 
+  // ── Workspace CRUD ──
+
+  async createWorkspace(
+    options: Omit<Workspace, 'id' | 'createdAt' | 'updatedAt'>,
+  ): Promise<Workspace> {
+    return this.queueMutation(() => {
+      const now = Date.now();
+      const workspace: Workspace = {
+        ...options,
+        id: `ws_${randomBytes(12).toString('hex')}`,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this._workspaces.push(workspace);
+      return clone(workspace);
+    });
+  }
+
+  async getWorkspace(id: string): Promise<Workspace | undefined> {
+    await this.ensureReady();
+    await this.refreshState();
+    const workspace = this._workspaces.find((entry) => entry.id === id);
+    return workspace ? clone(workspace) : undefined;
+  }
+
+  async listWorkspaces(filter?: {
+    tenantId?: string;
+    status?: Workspace['status'];
+  }): Promise<Workspace[]> {
+    await this.ensureReady();
+    await this.refreshState();
+    let list = this._workspaces;
+    if (filter?.tenantId) {
+      list = list.filter((entry) => entry.tenantId === filter.tenantId);
+    }
+    if (filter?.status) {
+      list = list.filter((entry) => entry.status === filter.status);
+    }
+    return list.map((entry) => clone(entry));
+  }
+
+  async updateWorkspace(
+    id: string,
+    updates: Partial<Pick<Workspace, 'name' | 'status' | 'description' | 'config' | 'metadata'>>,
+  ): Promise<Workspace | undefined> {
+    return this.queueMutation(() => {
+      const workspace = this._workspaces.find((entry) => entry.id === id);
+      if (!workspace) return undefined;
+      Object.assign(workspace, updates);
+      workspace.updatedAt = Date.now();
+      return clone(workspace);
+    });
+  }
+
+  async deleteWorkspace(id: string): Promise<boolean> {
+    return this.queueMutation(() => {
+      const idx = this._workspaces.findIndex((entry) => entry.id === id);
+      if (idx === -1) return false;
+      this._workspaces.splice(idx, 1);
+      return true;
+    });
+  }
+
   async createPolicyPack(options: CreatePolicyPackOptions): Promise<PolicyPack> {
     return this.queueMutation(() => this.policyPacks.create(options));
   }
@@ -512,6 +626,699 @@ export class ControlPlaneService {
     await this.ensureReady();
     return generateEvidenceBundle(trace, policyDecisions, approvalDecisions);
   }
+
+  // ── Agent Manifest CRUD ──
+
+  async registerAgentManifest(
+    options: Omit<AgentManifest, 'id' | 'registeredAt'>,
+  ): Promise<AgentManifest> {
+    return this.queueMutation(() => {
+      const manifest: AgentManifest = {
+        ...options,
+        id: `am_${randomBytes(12).toString('hex')}`,
+        registeredAt: Date.now(),
+        manifestRevision: options.manifestRevision ?? 1,
+      };
+      this._agentManifests.push(manifest);
+      return clone(manifest);
+    });
+  }
+
+  async getAgentManifest(id: string): Promise<AgentManifest | undefined> {
+    await this.ensureReady();
+    await this.refreshState();
+    const manifest = this._agentManifests.find((m) => m.id === id);
+    return manifest ? clone(manifest) : undefined;
+  }
+
+  async listAgentManifests(status?: AgentManifest['status']): Promise<AgentManifest[]> {
+    await this.ensureReady();
+    await this.refreshState();
+    const list = status
+      ? this._agentManifests.filter((m) => m.status === status)
+      : this._agentManifests;
+    return list.map((m) => clone(m));
+  }
+
+  async updateAgentManifest(
+    id: string,
+    updates: Partial<Pick<AgentManifest, 'name' | 'version' | 'status' | 'capabilities' | 'modelLabel' | 'policyPackIds' | 'metadata' | 'lastHeartbeatAt'>>,
+  ): Promise<AgentManifest | undefined> {
+    return this.queueMutation(() => {
+      const manifest = this._agentManifests.find((m) => m.id === id);
+      if (!manifest) return undefined;
+      Object.assign(manifest, updates);
+      manifest.manifestRevision = (manifest.manifestRevision ?? 1) + 1;
+      return clone(manifest);
+    });
+  }
+
+  async removeAgentManifest(id: string): Promise<boolean> {
+    return this.queueMutation(() => {
+      const idx = this._agentManifests.findIndex((m) => m.id === id);
+      if (idx === -1) return false;
+      this._agentManifests.splice(idx, 1);
+      return true;
+    });
+  }
+
+  // ── Workspace Resource CRUD ──
+
+  async createWorkspaceResource(
+    options: Omit<WorkspaceResource, 'id' | 'version' | 'createdAt' | 'updatedAt'>,
+  ): Promise<WorkspaceResource> {
+    return this.queueMutation(() => {
+      const now = Date.now();
+      const resource: WorkspaceResource = {
+        ...options,
+        id: `wr_${randomBytes(12).toString('hex')}`,
+        version: 1,
+        resourceVersion: {
+          version: 1,
+          updatedAt: now,
+          updatedBy: options.createdBy,
+        },
+        createdAt: now,
+        updatedAt: now,
+      };
+      this._workspaceResources.push(resource);
+      return clone(resource);
+    });
+  }
+
+  async getWorkspaceResource(id: string): Promise<WorkspaceResource | undefined> {
+    await this.ensureReady();
+    await this.refreshState();
+    const resource = this._workspaceResources.find((r) => r.id === id);
+    return resource ? clone(resource) : undefined;
+  }
+
+  async listWorkspaceResources(
+    filter?: { resourceType?: string; status?: WorkspaceResource['status']; tags?: string[] },
+  ): Promise<WorkspaceResource[]> {
+    await this.ensureReady();
+    await this.refreshState();
+    let list = this._workspaceResources;
+    if (filter?.resourceType) {
+      list = list.filter((r) => r.resourceType === filter.resourceType);
+    }
+    if (filter?.status) {
+      list = list.filter((r) => r.status === filter.status);
+    }
+    if (filter?.tags && filter.tags.length > 0) {
+      list = list.filter((r) => filter.tags!.some((t) => r.tags?.includes(t)));
+    }
+    return list.map((r) => clone(r));
+  }
+
+  async updateWorkspaceResource(
+    id: string,
+    updates: Partial<Pick<WorkspaceResource, 'name' | 'status' | 'data' | 'tags' | 'metadata' | 'updatedBy' | 'reviewStatus' | 'evidenceRefs' | 'confidence'>>,
+  ): Promise<WorkspaceResource | undefined> {
+    return this.queueMutation(() => {
+      const resource = this._workspaceResources.find((r) => r.id === id);
+      if (!resource) return undefined;
+      Object.assign(resource, updates);
+      resource.version += 1;
+      resource.updatedAt = Date.now();
+      resource.resourceVersion = {
+        version: resource.version,
+        updatedAt: resource.updatedAt,
+        updatedBy: updates.updatedBy ?? resource.updatedBy,
+      };
+      if (updates.updatedBy) {
+        resource.updatedBy = updates.updatedBy;
+      }
+      return clone(resource);
+    });
+  }
+
+  async deleteWorkspaceResource(id: string): Promise<boolean> {
+    return this.queueMutation(() => {
+      const idx = this._workspaceResources.findIndex((r) => r.id === id);
+      if (idx === -1) return false;
+      this._workspaceResources.splice(idx, 1);
+      return true;
+    });
+  }
+
+  // ── Task CRUD ──
+
+  async createTask(
+    options: Omit<Task, 'id' | 'createdAt' | 'updatedAt'>,
+  ): Promise<Task> {
+    return this.queueMutation(() => {
+      const now = Date.now();
+      const task: Task = {
+        ...options,
+        id: `task_${randomBytes(12).toString('hex')}`,
+        version: options.version ?? 1,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this._tasks.push(task);
+      return clone(task);
+    });
+  }
+
+  async getTask(id: string): Promise<Task | undefined> {
+    await this.ensureReady();
+    await this.refreshState();
+    const task = this._tasks.find((t) => t.id === id);
+    return task ? clone(task) : undefined;
+  }
+
+  async listTasks(
+    filter?: { status?: Task['status']; priority?: Task['priority']; assigneeId?: string },
+  ): Promise<Task[]> {
+    await this.ensureReady();
+    await this.refreshState();
+    let list = this._tasks;
+    if (filter?.status) {
+      list = list.filter((t) => t.status === filter.status);
+    }
+    if (filter?.priority) {
+      list = list.filter((t) => t.priority === filter.priority);
+    }
+    if (filter?.assigneeId) {
+      list = list.filter((t) => t.assigneeId === filter.assigneeId);
+    }
+    return list.map((t) => clone(t));
+  }
+
+  async updateTask(
+    id: string,
+    updates: Partial<Pick<Task, 'title' | 'description' | 'status' | 'priority' | 'assigneeId' | 'output' | 'error' | 'tags' | 'metadata' | 'completedAt'>>,
+  ): Promise<Task | undefined> {
+    return this.queueMutation(() => {
+      const task = this._tasks.find((t) => t.id === id);
+      if (!task) return undefined;
+      Object.assign(task, updates);
+      task.updatedAt = Date.now();
+      task.version = (task.version ?? 1) + 1;
+      return clone(task);
+    });
+  }
+
+  // ── Assignment CRUD ──
+
+  async createAssignment(
+    options: Omit<Assignment, 'id' | 'createdAt' | 'updatedAt'>,
+  ): Promise<Assignment> {
+    return this.queueMutation(() => {
+      const now = Date.now();
+      const assignment: Assignment = {
+        ...options,
+        id: `asg_${randomBytes(12).toString('hex')}`,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this._assignments.push(assignment);
+      return clone(assignment);
+    });
+  }
+
+  async getAssignment(id: string): Promise<Assignment | undefined> {
+    await this.ensureReady();
+    await this.refreshState();
+    const assignment = this._assignments.find((entry) => entry.id === id);
+    return assignment ? clone(assignment) : undefined;
+  }
+
+  async listAssignments(filter?: {
+    taskId?: string;
+    assigneeId?: string;
+    status?: Assignment['status'];
+    workspaceId?: string;
+  }): Promise<Assignment[]> {
+    await this.ensureReady();
+    await this.refreshState();
+    let list = this._assignments;
+    if (filter?.taskId) {
+      list = list.filter((entry) => entry.taskId === filter.taskId);
+    }
+    if (filter?.assigneeId) {
+      list = list.filter((entry) => entry.assigneeId === filter.assigneeId);
+    }
+    if (filter?.status) {
+      list = list.filter((entry) => entry.status === filter.status);
+    }
+    if (filter?.workspaceId) {
+      list = list.filter((entry) => entry.workspaceId === filter.workspaceId);
+    }
+    return list.map((entry) => clone(entry));
+  }
+
+  async updateAssignment(
+    id: string,
+    updates: Partial<Pick<Assignment, 'status' | 'leaseOwner' | 'leaseExpiresAt' | 'retryCount' | 'metadata' | 'completedAt'>>,
+  ): Promise<Assignment | undefined> {
+    return this.queueMutation(() => {
+      const assignment = this._assignments.find((entry) => entry.id === id);
+      if (!assignment) return undefined;
+      Object.assign(assignment, updates);
+      assignment.updatedAt = Date.now();
+      return clone(assignment);
+    });
+  }
+
+  async deleteAssignment(id: string): Promise<boolean> {
+    return this.queueMutation(() => {
+      const idx = this._assignments.findIndex((entry) => entry.id === id);
+      if (idx === -1) return false;
+      this._assignments.splice(idx, 1);
+      return true;
+    });
+  }
+
+  // ── Deployment Revision CRUD ──
+
+  async createDeploymentRevision(
+    options: Omit<DeploymentRevision, 'id' | 'createdAt'>,
+  ): Promise<DeploymentRevision> {
+    return this.queueMutation(() => {
+      const revision: DeploymentRevision = {
+        ...options,
+        id: `dr_${randomBytes(12).toString('hex')}`,
+        version: options.version ?? 1,
+        createdAt: Date.now(),
+      };
+      this._deploymentRevisions.push(revision);
+      return clone(revision);
+    });
+  }
+
+  async getDeploymentRevision(id: string): Promise<DeploymentRevision | undefined> {
+    await this.ensureReady();
+    await this.refreshState();
+    const revision = this._deploymentRevisions.find((r) => r.id === id);
+    return revision ? clone(revision) : undefined;
+  }
+
+  async listDeploymentRevisions(agentManifestId?: string): Promise<DeploymentRevision[]> {
+    await this.ensureReady();
+    await this.refreshState();
+    const list = agentManifestId
+      ? this._deploymentRevisions.filter((r) => r.agentManifestId === agentManifestId)
+      : this._deploymentRevisions;
+    return list.map((r) => clone(r));
+  }
+
+  async updateDeploymentRevision(
+    id: string,
+    updates: Partial<Pick<DeploymentRevision, 'status' | 'activatedAt' | 'rolledBackAt' | 'metadata'>>,
+  ): Promise<DeploymentRevision | undefined> {
+    return this.queueMutation(() => {
+      const revision = this._deploymentRevisions.find((r) => r.id === id);
+      if (!revision) return undefined;
+      Object.assign(revision, updates);
+      revision.version = (revision.version ?? 1) + 1;
+      return clone(revision);
+    });
+  }
+
+  // ── Incident CRUD ──
+
+  async createIncident(
+    options: Omit<Incident, 'id' | 'createdAt' | 'updatedAt'>,
+  ): Promise<Incident> {
+    return this.queueMutation(() => {
+      const now = Date.now();
+      const incident: Incident = {
+        ...options,
+        id: `inc_${randomBytes(12).toString('hex')}`,
+        version: options.version ?? 1,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this._incidents.push(incident);
+      return clone(incident);
+    });
+  }
+
+  async getIncident(id: string): Promise<Incident | undefined> {
+    await this.ensureReady();
+    await this.refreshState();
+    const incident = this._incidents.find((i) => i.id === id);
+    return incident ? clone(incident) : undefined;
+  }
+
+  async listIncidents(
+    filter?: { severity?: Incident['severity']; status?: Incident['status'] },
+  ): Promise<Incident[]> {
+    await this.ensureReady();
+    await this.refreshState();
+    let list = this._incidents;
+    if (filter?.severity) {
+      list = list.filter((i) => i.severity === filter.severity);
+    }
+    if (filter?.status) {
+      list = list.filter((i) => i.status === filter.status);
+    }
+    return list.map((i) => clone(i));
+  }
+
+  async updateIncident(
+    id: string,
+    updates: Partial<Pick<Incident, 'title' | 'description' | 'severity' | 'status' | 'assigneeId' | 'tags' | 'metadata' | 'resolvedAt'>>,
+  ): Promise<Incident | undefined> {
+    return this.queueMutation(() => {
+      const incident = this._incidents.find((i) => i.id === id);
+      if (!incident) return undefined;
+      Object.assign(incident, updates);
+      incident.updatedAt = Date.now();
+      incident.version = (incident.version ?? 1) + 1;
+      return clone(incident);
+    });
+  }
+
+  // ── Eval Suite CRUD ──
+
+  async createEvalSuite(
+    options: Omit<EvalSuite, 'id' | 'createdAt' | 'updatedAt'>,
+  ): Promise<EvalSuite> {
+    return this.queueMutation(() => {
+      const now = Date.now();
+      const suite: EvalSuite = {
+        ...options,
+        id: `es_${randomBytes(12).toString('hex')}`,
+        version: options.version ?? 1,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this._evalSuites.push(suite);
+      return clone(suite);
+    });
+  }
+
+  async getEvalSuite(id: string): Promise<EvalSuite | undefined> {
+    await this.ensureReady();
+    await this.refreshState();
+    const suite = this._evalSuites.find((s) => s.id === id);
+    return suite ? clone(suite) : undefined;
+  }
+
+  async listEvalSuites(): Promise<EvalSuite[]> {
+    await this.ensureReady();
+    await this.refreshState();
+    return this._evalSuites.map((s) => clone(s));
+  }
+
+  // ── Eval Run CRUD ──
+
+  async createEvalRun(
+    options: Omit<EvalRun, 'id' | 'createdAt'>,
+  ): Promise<EvalRun> {
+    return this.queueMutation(() => {
+      const run: EvalRun = {
+        ...options,
+        id: `er_${randomBytes(12).toString('hex')}`,
+        version: options.version ?? 1,
+        createdAt: Date.now(),
+      };
+      this._evalRuns.push(run);
+      return clone(run);
+    });
+  }
+
+  async getEvalRun(id: string): Promise<EvalRun | undefined> {
+    await this.ensureReady();
+    await this.refreshState();
+    const run = this._evalRuns.find((r) => r.id === id);
+    return run ? clone(run) : undefined;
+  }
+
+  async listEvalRuns(suiteId?: string): Promise<EvalRun[]> {
+    await this.ensureReady();
+    await this.refreshState();
+    const list = suiteId
+      ? this._evalRuns.filter((r) => r.suiteId === suiteId)
+      : this._evalRuns;
+    return list.map((r) => clone(r));
+  }
+
+  async updateEvalRun(
+    id: string,
+    updates: Partial<Pick<EvalRun, 'status' | 'passed' | 'failed' | 'errored' | 'total' | 'results' | 'metadata' | 'completedAt'>>,
+  ): Promise<EvalRun | undefined> {
+    return this.queueMutation(() => {
+      const run = this._evalRuns.find((r) => r.id === id);
+      if (!run) return undefined;
+      Object.assign(run, updates);
+      run.version = (run.version ?? 1) + 1;
+      return clone(run);
+    });
+  }
+
+  // ── Policy Binding CRUD ──
+
+  async createPolicyBinding(
+    options: Omit<PolicyBinding, 'id' | 'createdAt'>,
+  ): Promise<PolicyBinding> {
+    return this.queueMutation(() => {
+      const binding: PolicyBinding = {
+        ...options,
+        id: `pb_${randomBytes(12).toString('hex')}`,
+        createdAt: Date.now(),
+      };
+      this._policyBindings.push(binding);
+      return clone(binding);
+    });
+  }
+
+  async listPolicyBindings(
+    filter?: { targetType?: PolicyBinding['targetType']; targetId?: string; policyPackId?: string },
+  ): Promise<PolicyBinding[]> {
+    await this.ensureReady();
+    await this.refreshState();
+    let list = this._policyBindings;
+    if (filter?.targetType) {
+      list = list.filter((b) => b.targetType === filter.targetType);
+    }
+    if (filter?.targetId) {
+      list = list.filter((b) => b.targetId === filter.targetId);
+    }
+    if (filter?.policyPackId) {
+      list = list.filter((b) => b.policyPackId === filter.policyPackId);
+    }
+    return list.map((b) => clone(b));
+  }
+
+  async removePolicyBinding(id: string): Promise<boolean> {
+    return this.queueMutation(() => {
+      const idx = this._policyBindings.findIndex((b) => b.id === id);
+      if (idx === -1) return false;
+      this._policyBindings.splice(idx, 1);
+      return true;
+    });
+  }
+
+  // ── Maintenance Job CRUD ──
+
+  async createMaintenanceJob(
+    options: Omit<MaintenanceJob, 'id' | 'createdAt' | 'updatedAt'>,
+  ): Promise<MaintenanceJob> {
+    return this.queueMutation(() => {
+      const now = Date.now();
+      const job: MaintenanceJob = {
+        ...options,
+        id: `job_${randomBytes(12).toString('hex')}`,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this._maintenanceJobs.push(job);
+      return clone(job);
+    });
+  }
+
+  async getMaintenanceJob(id: string): Promise<MaintenanceJob | undefined> {
+    await this.ensureReady();
+    await this.refreshState();
+    const job = this._maintenanceJobs.find((entry) => entry.id === id);
+    return job ? clone(job) : undefined;
+  }
+
+  async listMaintenanceJobs(filter?: {
+    workspaceId?: string;
+    status?: MaintenanceJob['status'];
+    jobType?: MaintenanceJob['jobType'];
+  }): Promise<MaintenanceJob[]> {
+    await this.ensureReady();
+    await this.refreshState();
+    let list = this._maintenanceJobs;
+    if (filter?.workspaceId) {
+      list = list.filter((entry) => entry.workspaceId === filter.workspaceId);
+    }
+    if (filter?.status) {
+      list = list.filter((entry) => entry.status === filter.status);
+    }
+    if (filter?.jobType) {
+      list = list.filter((entry) => entry.jobType === filter.jobType);
+    }
+    return list.map((entry) => clone(entry));
+  }
+
+  async updateMaintenanceJob(
+    id: string,
+    updates: Partial<Pick<MaintenanceJob, 'status' | 'metadata' | 'completedAt' | 'schedule'>>,
+  ): Promise<MaintenanceJob | undefined> {
+    return this.queueMutation(() => {
+      const job = this._maintenanceJobs.find((entry) => entry.id === id);
+      if (!job) return undefined;
+      Object.assign(job, updates);
+      job.updatedAt = Date.now();
+      return clone(job);
+    });
+  }
+
+  async deleteMaintenanceJob(id: string): Promise<boolean> {
+    return this.queueMutation(() => {
+      const idx = this._maintenanceJobs.findIndex((entry) => entry.id === id);
+      if (idx === -1) return false;
+      this._maintenanceJobs.splice(idx, 1);
+      return true;
+    });
+  }
+
+  // ── Resource Mutation Review ──
+
+  async proposeResourceMutation(
+    options: Omit<ResourceMutationProposal, 'id' | 'status' | 'decisions' | 'createdAt' | 'updatedAt'>,
+  ): Promise<ResourceMutationProposal> {
+    return this.queueMutation(() => {
+      const now = Date.now();
+      const proposal: ResourceMutationProposal = {
+        ...options,
+        id: `rmp_${randomBytes(12).toString('hex')}`,
+        status: 'pending',
+        decisions: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      this._resourceMutationProposals.push(proposal);
+      return clone(proposal);
+    });
+  }
+
+  async getResourceMutationProposal(id: string): Promise<ResourceMutationProposal | undefined> {
+    await this.ensureReady();
+    await this.refreshState();
+    const proposal = this._resourceMutationProposals.find((entry) => entry.id === id);
+    return proposal ? clone(proposal) : undefined;
+  }
+
+  async listResourceMutationProposals(filter?: {
+    workspaceId?: string;
+    resourceType?: string;
+    status?: ResourceMutationProposal['status'];
+  }): Promise<ResourceMutationProposal[]> {
+    await this.ensureReady();
+    await this.refreshState();
+    let list = this._resourceMutationProposals;
+    if (filter?.workspaceId) {
+      list = list.filter((entry) => entry.workspaceId === filter.workspaceId);
+    }
+    if (filter?.resourceType) {
+      list = list.filter((entry) => entry.resourceType === filter.resourceType);
+    }
+    if (filter?.status) {
+      list = list.filter((entry) => entry.status === filter.status);
+    }
+    return list.map((entry) => clone(entry));
+  }
+
+  async decideResourceMutation(
+    id: string,
+    decision: Omit<MutationDecision, 'id' | 'proposalId' | 'createdAt'>,
+  ): Promise<ResourceMutationProposal | undefined> {
+    return this.queueMutation(() => {
+      const proposal = this._resourceMutationProposals.find((entry) => entry.id === id);
+      if (!proposal) return undefined;
+
+      const mutationDecision = {
+        ...decision,
+        id: `md_${randomBytes(12).toString('hex')}`,
+        proposalId: id,
+        createdAt: Date.now(),
+      };
+      proposal.decisions.push(mutationDecision);
+      proposal.status = decision.verdict === 'approved'
+        ? 'approved'
+        : decision.verdict === 'rejected'
+          ? 'rejected'
+          : 'pending';
+      proposal.updatedAt = Date.now();
+
+      if (decision.verdict === 'approved') {
+        if (proposal.operation === 'create') {
+          const now = Date.now();
+          this._workspaceResources.push({
+            id: proposal.resourceId ?? `wr_${randomBytes(12).toString('hex')}`,
+            tenantId: proposal.tenantId,
+            workspaceId: proposal.workspaceId,
+            resourceType: proposal.resourceType,
+            name: String(proposal.payload?.name ?? proposal.resourceType),
+            status: 'active',
+            version: 1,
+            resourceVersion: {
+              version: 1,
+              updatedAt: now,
+              updatedBy: decision.decidedBy,
+              proposalId: proposal.id,
+            },
+            data: { ...(proposal.payload ?? {}) },
+            metadata: proposal.metadata ? { ...proposal.metadata } : undefined,
+            createdAt: now,
+            updatedAt: now,
+            createdBy: proposal.proposedBy,
+            updatedBy: decision.decidedBy,
+            reviewStatus: 'approved',
+          });
+        } else if (proposal.resourceId) {
+          const resource = this._workspaceResources.find((entry) => entry.id === proposal.resourceId);
+          if (resource) {
+            if (proposal.expectedVersion !== undefined && resource.version !== proposal.expectedVersion) {
+              proposal.status = 'rejected';
+              proposal.decisions.push({
+                id: `md_${randomBytes(12).toString('hex')}`,
+                proposalId: id,
+                decidedBy: 'system',
+                verdict: 'rejected',
+                reason: `Expected resource version ${proposal.expectedVersion}, found ${resource.version}`,
+                createdAt: Date.now(),
+              });
+              return clone(proposal);
+            }
+
+            if (proposal.operation === 'delete') {
+              resource.status = 'deleted';
+            } else if (proposal.payload) {
+              resource.data = { ...resource.data, ...proposal.payload };
+              if (typeof proposal.payload.name === 'string') {
+                resource.name = proposal.payload.name;
+              }
+            }
+            resource.version += 1;
+            resource.updatedAt = Date.now();
+            resource.updatedBy = decision.decidedBy;
+            resource.reviewStatus = 'approved';
+            resource.resourceVersion = {
+              version: resource.version,
+              updatedAt: resource.updatedAt,
+              updatedBy: decision.decidedBy,
+              proposalId: proposal.id,
+            };
+          }
+        }
+
+        proposal.status = 'applied';
+      }
+
+      return clone(proposal);
+    });
+  }
+
+  // ── Health & Lifecycle ──
 
   async health(): Promise<{
     ready: boolean;

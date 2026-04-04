@@ -18,6 +18,7 @@
 export type {
   Tenant,
   TenantConfig,
+  Workspace,
   DeploymentMode,
   ControlPlaneRole,
   PolicyPack,
@@ -30,6 +31,30 @@ export type {
   ControlPlaneAuthToken,
   ControlPlaneConfig,
   ControlPlaneServiceConfig,
+  // Workforce OS resources
+  AgentManifest,
+  AgentManifestStatus,
+  ResourceVersion,
+  WorkspaceResource,
+  WorkspaceResourceStatus,
+  Task,
+  TaskStatus,
+  TaskPriority,
+  DeploymentRevision,
+  DeploymentStatus,
+  Incident,
+  IncidentSeverity,
+  IncidentStatus,
+  EvalSuite,
+  EvalRun,
+  EvalRunStatus,
+  PolicyBinding,
+  Assignment,
+  AssignmentStatus,
+  MaintenanceJob,
+  MaintenanceJobStatus,
+  MutationDecision,
+  ResourceMutationProposal,
 } from './types';
 
 // ── Policy Packs ──

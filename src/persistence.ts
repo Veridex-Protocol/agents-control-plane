@@ -15,13 +15,25 @@ import path from 'node:path';
 import type { ActiveApproval } from './approval-workflows';
 import type { TraceStoreBackend } from './trace-store';
 import type {
+  Assignment,
+  AgentManifest,
   ApprovalWorkflow,
   ControlPlaneAuthToken,
   ControlPlaneRole,
+  DeploymentRevision,
+  EvalRun,
+  EvalSuite,
+  Incident,
+  MaintenanceJob,
+  PolicyBinding,
   PolicyPack,
+  ResourceMutationProposal,
+  Workspace,
+  Task,
   Tenant,
   TraceQuery,
   TraceRecord,
+  WorkspaceResource,
 } from './types';
 
 export interface ControlPlaneMetadataSnapshot {
@@ -30,9 +42,22 @@ export interface ControlPlaneMetadataSnapshot {
   updatedAt: number;
   authTokens: ControlPlaneAuthToken[];
   tenants: Tenant[];
+  workspaces: Workspace[];
   policyPacks: PolicyPack[];
   approvalWorkflows: ApprovalWorkflow[];
   activeApprovals: ActiveApproval[];
+  // Workforce OS resources
+  agentManifests: AgentManifest[];
+  workspaceResources: WorkspaceResource[];
+  tasks: Task[];
+  deploymentRevisions: DeploymentRevision[];
+  incidents: Incident[];
+  evalSuites: EvalSuite[];
+  evalRuns: EvalRun[];
+  policyBindings: PolicyBinding[];
+  assignments: Assignment[];
+  maintenanceJobs: MaintenanceJob[];
+  resourceMutationProposals: ResourceMutationProposal[];
 }
 
 const EMPTY_SNAPSHOT: ControlPlaneMetadataSnapshot = {
@@ -41,9 +66,21 @@ const EMPTY_SNAPSHOT: ControlPlaneMetadataSnapshot = {
   updatedAt: 0,
   authTokens: [],
   tenants: [],
+  workspaces: [],
   policyPacks: [],
   approvalWorkflows: [],
   activeApprovals: [],
+  agentManifests: [],
+  workspaceResources: [],
+  tasks: [],
+  deploymentRevisions: [],
+  incidents: [],
+  evalSuites: [],
+  evalRuns: [],
+  policyBindings: [],
+  assignments: [],
+  maintenanceJobs: [],
+  resourceMutationProposals: [],
 };
 
 function cloneSnapshot(snapshot: ControlPlaneMetadataSnapshot): ControlPlaneMetadataSnapshot {
@@ -114,9 +151,21 @@ export class JSONFileMetadataStore implements ControlPlaneMetadataStore {
         updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0,
         authTokens: Array.isArray(parsed.authTokens) ? parsed.authTokens : [],
         tenants: Array.isArray(parsed.tenants) ? parsed.tenants : [],
+        workspaces: Array.isArray(parsed.workspaces) ? parsed.workspaces : [],
         policyPacks: Array.isArray(parsed.policyPacks) ? parsed.policyPacks : [],
         approvalWorkflows: Array.isArray(parsed.approvalWorkflows) ? parsed.approvalWorkflows : [],
         activeApprovals: Array.isArray(parsed.activeApprovals) ? parsed.activeApprovals : [],
+        agentManifests: Array.isArray(parsed.agentManifests) ? parsed.agentManifests : [],
+        workspaceResources: Array.isArray(parsed.workspaceResources) ? parsed.workspaceResources : [],
+        tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
+        deploymentRevisions: Array.isArray(parsed.deploymentRevisions) ? parsed.deploymentRevisions : [],
+        incidents: Array.isArray(parsed.incidents) ? parsed.incidents : [],
+        evalSuites: Array.isArray(parsed.evalSuites) ? parsed.evalSuites : [],
+        evalRuns: Array.isArray(parsed.evalRuns) ? parsed.evalRuns : [],
+        policyBindings: Array.isArray(parsed.policyBindings) ? parsed.policyBindings : [],
+        assignments: Array.isArray(parsed.assignments) ? parsed.assignments : [],
+        maintenanceJobs: Array.isArray(parsed.maintenanceJobs) ? parsed.maintenanceJobs : [],
+        resourceMutationProposals: Array.isArray(parsed.resourceMutationProposals) ? parsed.resourceMutationProposals : [],
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -310,9 +359,21 @@ export class PostgresMetadataStore implements ControlPlaneMetadataStore {
       updatedAt: Number(row.updated_at ?? (snapshot as { updatedAt?: number }).updatedAt ?? 0),
       authTokens: Array.isArray((snapshot as { authTokens?: unknown[] }).authTokens) ? (snapshot as { authTokens: ControlPlaneAuthToken[] }).authTokens : [],
       tenants: Array.isArray((snapshot as { tenants?: unknown[] }).tenants) ? (snapshot as { tenants: Tenant[] }).tenants : [],
+      workspaces: Array.isArray((snapshot as { workspaces?: unknown[] }).workspaces) ? (snapshot as { workspaces: Workspace[] }).workspaces : [],
       policyPacks: Array.isArray((snapshot as { policyPacks?: unknown[] }).policyPacks) ? (snapshot as { policyPacks: PolicyPack[] }).policyPacks : [],
       approvalWorkflows: Array.isArray((snapshot as { approvalWorkflows?: unknown[] }).approvalWorkflows) ? (snapshot as { approvalWorkflows: ApprovalWorkflow[] }).approvalWorkflows : [],
       activeApprovals: Array.isArray((snapshot as { activeApprovals?: unknown[] }).activeApprovals) ? (snapshot as { activeApprovals: ActiveApproval[] }).activeApprovals : [],
+      agentManifests: Array.isArray((snapshot as { agentManifests?: unknown[] }).agentManifests) ? (snapshot as { agentManifests: AgentManifest[] }).agentManifests : [],
+      workspaceResources: Array.isArray((snapshot as { workspaceResources?: unknown[] }).workspaceResources) ? (snapshot as { workspaceResources: WorkspaceResource[] }).workspaceResources : [],
+      tasks: Array.isArray((snapshot as { tasks?: unknown[] }).tasks) ? (snapshot as { tasks: Task[] }).tasks : [],
+      deploymentRevisions: Array.isArray((snapshot as { deploymentRevisions?: unknown[] }).deploymentRevisions) ? (snapshot as { deploymentRevisions: DeploymentRevision[] }).deploymentRevisions : [],
+      incidents: Array.isArray((snapshot as { incidents?: unknown[] }).incidents) ? (snapshot as { incidents: Incident[] }).incidents : [],
+      evalSuites: Array.isArray((snapshot as { evalSuites?: unknown[] }).evalSuites) ? (snapshot as { evalSuites: EvalSuite[] }).evalSuites : [],
+      evalRuns: Array.isArray((snapshot as { evalRuns?: unknown[] }).evalRuns) ? (snapshot as { evalRuns: EvalRun[] }).evalRuns : [],
+      policyBindings: Array.isArray((snapshot as { policyBindings?: unknown[] }).policyBindings) ? (snapshot as { policyBindings: PolicyBinding[] }).policyBindings : [],
+      assignments: Array.isArray((snapshot as { assignments?: unknown[] }).assignments) ? (snapshot as { assignments: Assignment[] }).assignments : [],
+      maintenanceJobs: Array.isArray((snapshot as { maintenanceJobs?: unknown[] }).maintenanceJobs) ? (snapshot as { maintenanceJobs: MaintenanceJob[] }).maintenanceJobs : [],
+      resourceMutationProposals: Array.isArray((snapshot as { resourceMutationProposals?: unknown[] }).resourceMutationProposals) ? (snapshot as { resourceMutationProposals: ResourceMutationProposal[] }).resourceMutationProposals : [],
     };
   }
 
