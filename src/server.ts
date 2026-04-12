@@ -273,6 +273,22 @@ export function createControlPlaneApp(service: ControlPlaneService): ControlPlan
     return deleted ? c.json({ deleted: true }) : jsonError('Agent manifest not found', 404);
   });
 
+  /**
+   * GET /v1/agent-manifests/lookup?name=X or ?definitionId=X
+   * Find manifests by name or original AgentDefinition ID (stored in metadata).
+   */
+  app.get('/v1/agent-manifests/lookup', async (c) => {
+    const name = c.req.query('name');
+    const definitionId = c.req.query('definitionId');
+    const all = await service.listAgentManifests();
+    const matches = all.filter((m) => {
+      if (name && m.name === name) return true;
+      if (definitionId && m.metadata?.sdkDefinitionId === definitionId) return true;
+      return false;
+    });
+    return c.json({ manifests: matches, count: matches.length });
+  });
+
   app.get('/v1/workspace-resources', async (c) => c.json(await service.listWorkspaceResources({
     resourceType: c.req.query('resourceType') ?? undefined,
     status: c.req.query('status') as 'active' | 'archived' | 'deleted' | undefined,
