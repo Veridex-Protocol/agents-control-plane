@@ -1,0 +1,50 @@
+{
+  "name": "Treasury Dual Approval",
+  "description": "Approval-gated treasury operations for stablecoin payment and treasury transfer workflows with bounded authority and named destinations.",
+  "version": "1.0.0",
+  "tags": ["enterprise", "treasury", "approval-gated", "starter"],
+  "rules": [
+    {
+      "type": "asset.allowlist",
+      "enabled": true,
+      "description": "Only permit approved stablecoins during the pilot.",
+      "params": {
+        "symbols": ["USDC", "USDT", "PYUSD"]
+      }
+    },
+    {
+      "type": "destination.allowlist",
+      "enabled": true,
+      "description": "Only permit named treasury counterparties and internal destinations.",
+      "params": {
+        "mode": "allowlist_only"
+      }
+    },
+    {
+      "type": "approval.required",
+      "enabled": true,
+      "description": "Require two approvers for actions at or above the defined threshold.",
+      "params": {
+        "minApprovals": 2,
+        "thresholdUsd": 5000
+      }
+    },
+    {
+      "type": "spend.limit",
+      "enabled": true,
+      "description": "Apply bounded per-transaction and daily treasury limits.",
+      "params": {
+        "perTransactionUsd": 10000,
+        "dailyUsd": 50000
+      }
+    },
+    {
+      "type": "incident.raise_on_route_mismatch",
+      "enabled": true,
+      "description": "Escalate if an execution route diverges from the approved route or policy expectation.",
+      "params": {
+        "severity": "high"
+      }
+    }
+  ]
+}

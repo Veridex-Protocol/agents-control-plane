@@ -1,0 +1,50 @@
+{
+  "name": "Cross-Chain Conservative",
+  "description": "Conservative cross-chain policy pack for treasury operations that restricts assets, routes, and execution risk while escalating unusual paths.",
+  "version": "1.0.0",
+  "tags": ["enterprise", "cross-chain", "conservative", "starter"],
+  "rules": [
+    {
+      "type": "chain.allowlist",
+      "enabled": true,
+      "description": "Restrict the pilot to explicitly approved chains.",
+      "params": {
+        "chains": ["base", "ethereum", "arbitrum", "optimism"]
+      }
+    },
+    {
+      "type": "route.require_healthy_path",
+      "enabled": true,
+      "description": "Allow execution only when route health is within policy limits.",
+      "params": {
+        "minimumHealth": "healthy"
+      }
+    },
+    {
+      "type": "approval.required_for_cross_chain",
+      "enabled": true,
+      "description": "Always require explicit approval for cross-chain transfers.",
+      "params": {
+        "minApprovals": 2
+      }
+    },
+    {
+      "type": "spend.limit",
+      "enabled": true,
+      "description": "Use lower caps for cross-chain treasury actions during early rollout.",
+      "params": {
+        "perTransactionUsd": 5000,
+        "dailyUsd": 20000
+      }
+    },
+    {
+      "type": "circuit_breaker.raise_on_settlement_anomaly",
+      "enabled": true,
+      "description": "Pause or escalate execution when settlement anomalies are detected.",
+      "params": {
+        "severity": "critical",
+        "autoPause": true
+      }
+    }
+  ]
+}

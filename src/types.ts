@@ -335,6 +335,28 @@ export interface AgentManifest {
   modelLabel?: string;
   /** Policy pack IDs bound to this agent */
   policyPackIds?: string[];
+
+  // ── Identity & Integrity (OIDC-A / A-JWT) ──
+
+  /** Issuer — the organization or platform that deployed this agent */
+  issuer?: string;
+  /** Audience — intended consumers of this agent's outputs */
+  audience?: string[];
+  /** Authorized scopes */
+  scopes?: string[];
+  /** Maximum delegation depth (0 = cannot delegate) */
+  maxDelegationDepth?: number;
+  /** Parent agent ID if spawned by another agent */
+  parentAgentId?: string;
+  /** SHA-256 checksum of the agent definition + tool manifest */
+  agentChecksum?: string;
+  /** SHA-256 hash of the agent definition */
+  definitionHash?: string;
+  /** SHA-256 hash of the tool manifest */
+  toolManifestHash?: string;
+  /** Timestamp the checksum was last computed */
+  checksumComputedAt?: number;
+
   /** Metadata */
   metadata?: Record<string, unknown>;
   /** Registration timestamp */

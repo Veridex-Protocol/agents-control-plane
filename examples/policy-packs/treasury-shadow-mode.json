@@ -1,0 +1,41 @@
+{
+  "name": "Treasury Shadow Mode",
+  "description": "Observe treasury and payment workflows without permitting live execution. Generates traces, approval candidates, and alert signals for policy tuning.",
+  "version": "1.0.0",
+  "tags": ["enterprise", "treasury", "shadow-mode", "starter"],
+  "rules": [
+    {
+      "type": "runtime.observe_only",
+      "enabled": true,
+      "description": "Never permit live execution while in shadow mode.",
+      "params": {
+        "enforce": true
+      }
+    },
+    {
+      "type": "approval.generate_candidate",
+      "enabled": true,
+      "description": "Generate approval candidates for any action above the review threshold.",
+      "params": {
+        "minValueUsd": 1000
+      }
+    },
+    {
+      "type": "trace.require_exportable_evidence",
+      "enabled": true,
+      "description": "Require traces to retain enough metadata for export and audit review.",
+      "params": {
+        "includeHashes": true,
+        "includeEvents": true
+      }
+    },
+    {
+      "type": "incident.raise_on_policy_violation",
+      "enabled": true,
+      "description": "Emit incidents whenever a shadow-mode action would have violated a control.",
+      "params": {
+        "severity": "medium"
+      }
+    }
+  ]
+}
