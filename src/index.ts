@@ -85,6 +85,12 @@ export type {
 // ── Approval Workflows ──
 export { ApprovalWorkflowEngine } from './approval-workflows';
 export type { ActiveApproval, ApprovalVote } from './approval-workflows';
+export {
+  FileApprovalJournal,
+  InMemoryApprovalJournal,
+  replayApprovalJournal,
+} from './approval-journal';
+export type { ApprovalJournalBackend, ApprovalJournalEvent } from './approval-journal';
 
 // ── Audit Export ──
 export { exportTraces, generateEvidenceBundle } from './audit-export';
@@ -107,7 +113,34 @@ export type {
   TokenIssueOptions,
   ServiceAuthResult,
   ControlPlaneServicePersistence,
+  ProtectedIntentSubmission,
+  ProtectedIntentPreflightCheck,
+  ProtectedIntentPreflightDecision,
+  ProtectedIntentPreflightResult,
+  ProtectedIntentPreflightVerdict,
 } from './service';
 export { createControlPlaneApp, startControlPlaneServer } from './server';
 export { RemoteControlPlaneClient } from './remote-client';
 export type { RemoteControlPlaneClientConfig } from './remote-client';
+
+// ── Protected-intent (encrypted envelope) ──
+export {
+  PROTECTED_INTENT_VERSION,
+  ProtectedIntentError,
+  ProtectedIntentRegistry,
+  InMemoryReplayCache,
+  encryptIntent,
+  decryptIntent,
+  generateRecipientKeyPair,
+  resolveRecipientKey,
+} from './protected-intent';
+export type {
+  ProtectedIntentEnvelope,
+  ProtectedIntentKeyPair,
+  ProtectedIntentRegistryConfig,
+  PublishedRecipientKey,
+  ResolvedRecipientKey,
+  EncryptOptions,
+  DecryptOptions,
+  DecryptedIntent,
+} from './protected-intent';

@@ -286,6 +286,17 @@ export interface ControlPlaneServiceConfig {
     metadataTableName?: string;
     tracesTableName?: string;
   };
+  /**
+   * Protected-intent (encrypted envelope) configuration. When provided,
+   * the control-plane exposes `/v1/intents/protected` for agents that submit
+   * encrypted intents instead of plaintext.
+   */
+  protectedIntent?: {
+    /** Active recipient keypairs. First entry is treated as the primary. */
+    keys: import('./protected-intent').ProtectedIntentKeyPair[];
+    /** Replay window in ms — envelopes older than this are rejected. */
+    replayWindowMs?: number;
+  };
 }
 
 // ── Control Plane Client ──

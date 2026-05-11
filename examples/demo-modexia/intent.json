@@ -1,0 +1,55 @@
+{
+  "$schema": "https://veridex.network/schemas/intent/v1.json",
+  "version": "1",
+  "issuedAt": "2026-05-01T17:30:00Z",
+  "expiresAt": "2026-05-01T21:30:00Z",
+  "principal": {
+    "humanId": "alice@modexia-pilot-customer.com",
+    "agentId": "akash-compute-agent-7f3a",
+    "auth": "passkey:webauthn-v2",
+    "did": "did:veridex:base:0x9a1e...3d2f"
+  },
+  "action": {
+    "type": "payment.transfer",
+    "rail": "modexia.cctp",
+    "from": {
+      "chain": "base",
+      "asset": "USDC",
+      "wallet": "0x742d35Cc6634C0532925a3b8d8C9F0a4F0d9c4E1"
+    },
+    "to": {
+      "chain": "akash",
+      "asset": "AKT",
+      "wallet": "akash1nq6t5fkw8m7p3qj2v9hh0gxc8z6lm4dy7rs9wn"
+    },
+    "amount": {
+      "value": "5.10",
+      "currency": "USDC"
+    },
+    "metadata": {
+      "purpose": "akash-compute-deploy",
+      "dseq": "18294732",
+      "providerBidPrice": "0.42 uUSDC/block",
+      "containerSpec": "cuda-12.4 / 4 vCPU / 16Gi RAM"
+    }
+  },
+  "policy": {
+    "policyPackId": "modexia-pilot-cctp-base-akash-v1",
+    "caps": {
+      "maxPerRequest": "10.00",
+      "dailyLimit": "100.00",
+      "hourlyLimit": "25.00"
+    },
+    "allowList": {
+      "destinations": [
+        "akash1nq6t5fkw8m7p3qj2v9hh0gxc8z6lm4dy7rs9wn"
+      ],
+      "rails": ["modexia.cctp", "x402"]
+    },
+    "ttlMs": 14400000
+  },
+  "evidence": {
+    "anchorOnChain": true,
+    "auditExportRequired": true
+  }
+}

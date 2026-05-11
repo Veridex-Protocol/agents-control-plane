@@ -217,6 +217,71 @@ export function createControlPlaneApp(service: ControlPlaneService): ControlPlan
   });
   app.post('/v1/approvals/process-timeouts', async (c) => c.json(await service.processApprovalTimeouts()));
 
+  // ── Protected-intent (encrypted envelope) ingress ──
+  app.get('/v1/intents/protected/keys', async (c) =>
+    c.json({ keys: service.listProtectedIntentKeys() }),
+  );
+  app.post('/v1/intents/protected/preflight', async (c) => {
+    if (service.listProtectedIntentKeys().length === 0) {
+      return jsonError('Protected-intent feature is not configured', 501);
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return jsonError('Invalid JSON body', 400);
+    }
+    if (!body || typeof body !== 'object') {
+      return jsonError('Envelope payload required', 400);
+    }
+    try {
+      const result = await service.preflightProtectedIntent(body as Parameters<typeof service.preflightProtectedIntent>[0]);
+      return c.json(result, 200);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to preflight envelope';
+      const code = (err as { code?: string }).code;
+      const status =
+        code === 'replay-detected' || code === 'window-expired'
+          ? 409
+          : code === 'unknown-key' || code === 'aead-failure' || code === 'hash-mismatch'
+            ? 400
+            : code === 'malformed-envelope' || code === 'version-mismatch'
+              ? 400
+              : 400;
+      return Response.json({ error: message, code }, { status });
+    }
+  });
+  app.post('/v1/intents/protected', async (c) => {
+    if (service.listProtectedIntentKeys().length === 0) {
+      return jsonError('Protected-intent feature is not configured', 501);
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return jsonError('Invalid JSON body', 400);
+    }
+    if (!body || typeof body !== 'object') {
+      return jsonError('Envelope payload required', 400);
+    }
+    try {
+      const result = await service.submitProtectedIntent(body as Parameters<typeof service.submitProtectedIntent>[0]);
+      return c.json(result, 202);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to decrypt envelope';
+      const code = (err as { code?: string }).code;
+      const status =
+        code === 'replay-detected' || code === 'window-expired'
+          ? 409
+          : code === 'unknown-key' || code === 'aead-failure' || code === 'hash-mismatch'
+            ? 400
+            : code === 'malformed-envelope' || code === 'version-mismatch'
+              ? 400
+              : 400;
+      return Response.json({ error: message, code }, { status });
+    }
+  });
+
   app.post('/v1/traces/ingest', async (c) => c.json(await service.ingestTrace(await c.req.json()), 201));
   app.get('/v1/traces', async (c) => c.json(await service.queryTraces(parseTraceQuery(new URL(c.req.url).searchParams))));
   app.get('/v1/traces/:id', async (c) => {

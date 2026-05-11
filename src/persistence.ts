@@ -9,7 +9,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { ActiveApproval } from './approval-workflows';
@@ -186,7 +186,13 @@ export class JSONFileMetadataStore implements ControlPlaneMetadataStore {
     this.writeChain = this.writeChain.then(async () => {
       await this.ensureParentDir();
       const tempPath = `${this.filePath}.tmp`;
-      await writeFile(tempPath, JSON.stringify(nextSnapshot, null, 2), 'utf8');
+      const handle = await open(tempPath, 'w');
+      try {
+        await handle.writeFile(JSON.stringify(nextSnapshot, null, 2), 'utf8');
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
       await rename(tempPath, this.filePath);
     });
 

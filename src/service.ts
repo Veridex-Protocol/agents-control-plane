@@ -9,6 +9,18 @@ import { randomBytes } from 'node:crypto';
 
 import { ApprovalWorkflowEngine, type ActiveApproval, type ApprovalVote } from './approval-workflows';
 import {
+  FileApprovalJournal,
+  replayApprovalJournal,
+  type ApprovalJournalBackend,
+  type ApprovalJournalEvent,
+} from './approval-journal';
+import {
+  ProtectedIntentRegistry,
+  type ProtectedIntentEnvelope,
+  type ProtectedIntentKeyPair,
+  type PublishedRecipientKey,
+} from './protected-intent';
+import {
   exportTraces,
   generateEvidenceBundle,
   type AuditExportOptions,
@@ -35,6 +47,7 @@ import type {
   ControlPlaneRole,
   ControlPlaneServiceConfig,
   DeploymentRevision,
+  EvidenceBundle,
   EvalRun,
   EvalSuite,
   Incident,
@@ -68,6 +81,7 @@ type ResolvedControlPlaneServiceConfig = {
   tracePurgeIntervalMs: number;
   traceRetentionDays: number;
   postgres?: NonNullable<ControlPlaneServiceConfig['postgres']>;
+  protectedIntent?: NonNullable<ControlPlaneServiceConfig['protectedIntent']>;
 };
 
 function defaultConfig(config: ControlPlaneServiceConfig): ResolvedControlPlaneServiceConfig {
@@ -83,6 +97,241 @@ function defaultConfig(config: ControlPlaneServiceConfig): ResolvedControlPlaneS
     tracePurgeIntervalMs: config.tracePurgeIntervalMs ?? 15 * 60_000,
     traceRetentionDays: config.traceRetentionDays ?? 90,
     postgres: config.postgres,
+    protectedIntent: config.protectedIntent,
+  };
+}
+
+export interface ProtectedIntentSubmission {
+  /** Decrypted plaintext as a UTF-8 string. */
+  plaintext: string;
+  /** Plaintext as raw bytes (base64url) for binary payloads. */
+  plaintextBase64Url: string;
+  /** Echo of the envelope metadata for audit. */
+  envelope: {
+    keyId: string;
+    agentId: string;
+    submittedAt: number;
+    plaintextHash: string;
+    nonce: string;
+  };
+  /** Server-side timestamp when ingress accepted the envelope. */
+  acceptedAt: number;
+}
+
+export type ProtectedIntentPreflightVerdict = 'approved' | 'rejected';
+
+export interface ProtectedIntentPreflightCheck {
+  id: string;
+  passed: boolean;
+  reason: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ProtectedIntentPreflightDecision {
+  verdict: ProtectedIntentPreflightVerdict;
+  reasons: string[];
+  checks: ProtectedIntentPreflightCheck[];
+  policyPackId?: string;
+  intentSummary?: {
+    humanId?: string;
+    agentId?: string;
+    actionType?: string;
+    rail?: string;
+    destination?: string;
+    amount?: string;
+    currency?: string;
+    expiresAt?: string;
+  };
+}
+
+export interface ProtectedIntentPreflightResult extends ProtectedIntentSubmission {
+  decision: ProtectedIntentPreflightDecision;
+  evidenceBundle: EvidenceBundle;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function readDecimal(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string' || value.trim().length === 0) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function includesString(list: unknown, value: string | undefined): boolean {
+  return !!value && Array.isArray(list) && list.some((item) => item === value);
+}
+
+function evaluateProtectedPaymentIntent(
+  submission: ProtectedIntentSubmission,
+  now: number,
+): ProtectedIntentPreflightDecision {
+  const checks: ProtectedIntentPreflightCheck[] = [];
+  const addCheck = (
+    id: string,
+    passed: boolean,
+    reason: string,
+    metadata?: Record<string, unknown>,
+  ) => checks.push({ id, passed, reason, metadata });
+
+  let root: unknown;
+  try {
+    root = JSON.parse(submission.plaintext);
+    addCheck('valid-json', true, 'Plaintext intent is valid JSON');
+  } catch {
+    addCheck('valid-json', false, 'Plaintext intent is not valid JSON');
+    return buildPreflightDecision(checks);
+  }
+
+  if (!isRecord(root)) {
+    addCheck('intent-object', false, 'Plaintext intent must be a JSON object');
+    return buildPreflightDecision(checks);
+  }
+  addCheck('intent-object', true, 'Plaintext intent is a JSON object');
+
+  const principal = isRecord(root.principal) ? root.principal : undefined;
+  const action = isRecord(root.action) ? root.action : undefined;
+  const policy = isRecord(root.policy) ? root.policy : undefined;
+  const amountRecord = action && isRecord(action.amount) ? action.amount : undefined;
+  const toRecord = action && isRecord(action.to) ? action.to : undefined;
+  const caps = policy && isRecord(policy.caps) ? policy.caps : undefined;
+  const allowList = policy && isRecord(policy.allowList) ? policy.allowList : undefined;
+
+  const principalAgentId = readString(principal?.agentId);
+  const humanId = readString(principal?.humanId);
+  const actionType = readString(action?.type);
+  const rail = readString(action?.rail);
+  const destination = readString(toRecord?.wallet);
+  const amountValue = readDecimal(amountRecord?.value);
+  const amountText = readString(amountRecord?.value) ?? (amountValue !== undefined ? String(amountValue) : undefined);
+  const currency = readString(amountRecord?.currency);
+  const policyPackId = readString(policy?.policyPackId);
+  const expiresAt = readString(root.expiresAt);
+  const expiryMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
+
+  addCheck(
+    'agent-binding',
+    principalAgentId === submission.envelope.agentId,
+    principalAgentId === submission.envelope.agentId
+      ? 'Envelope agentId matches intent principal'
+      : 'Envelope agentId does not match intent principal',
+    { envelopeAgentId: submission.envelope.agentId, principalAgentId },
+  );
+  addCheck(
+    'not-expired',
+    Number.isFinite(expiryMs) && expiryMs > now,
+    Number.isFinite(expiryMs) && expiryMs > now
+      ? 'Intent has not expired'
+      : 'Intent is expired or missing expiresAt',
+    { expiresAt },
+  );
+  addCheck(
+    'payment-transfer-action',
+    actionType === 'payment.transfer',
+    actionType === 'payment.transfer'
+      ? 'Intent action is payment.transfer'
+      : 'Intent action is not payment.transfer',
+    { actionType },
+  );
+  addCheck(
+    'amount-positive',
+    amountValue !== undefined && amountValue > 0,
+    amountValue !== undefined && amountValue > 0
+      ? 'Payment amount is positive'
+      : 'Payment amount is missing, invalid, or non-positive',
+    { amount: amountText, currency },
+  );
+
+  const maxPerRequest = readDecimal(caps?.maxPerRequest);
+  addCheck(
+    'max-per-request',
+    amountValue !== undefined && maxPerRequest !== undefined && amountValue <= maxPerRequest,
+    amountValue !== undefined && maxPerRequest !== undefined && amountValue <= maxPerRequest
+      ? 'Payment is within maxPerRequest cap'
+      : 'Payment exceeds maxPerRequest cap or cap is missing',
+    { amount: amountText, maxPerRequest: caps?.maxPerRequest },
+  );
+
+  const hourlyLimit = readDecimal(caps?.hourlyLimit);
+  if (hourlyLimit !== undefined) {
+    addCheck(
+      'hourly-limit-static-bound',
+      amountValue !== undefined && amountValue <= hourlyLimit,
+      amountValue !== undefined && amountValue <= hourlyLimit
+        ? 'Payment is within declared hourlyLimit'
+        : 'Payment exceeds declared hourlyLimit',
+      { amount: amountText, hourlyLimit: caps?.hourlyLimit },
+    );
+  }
+
+  const dailyLimit = readDecimal(caps?.dailyLimit);
+  if (dailyLimit !== undefined) {
+    addCheck(
+      'daily-limit-static-bound',
+      amountValue !== undefined && amountValue <= dailyLimit,
+      amountValue !== undefined && amountValue <= dailyLimit
+        ? 'Payment is within declared dailyLimit'
+        : 'Payment exceeds declared dailyLimit',
+      { amount: amountText, dailyLimit: caps?.dailyLimit },
+    );
+  }
+
+  addCheck(
+    'destination-allowlist',
+    includesString(allowList?.destinations, destination),
+    includesString(allowList?.destinations, destination)
+      ? 'Destination is in the intent allow-list'
+      : 'Destination is not in the intent allow-list',
+    { destination },
+  );
+  addCheck(
+    'rail-allowlist',
+    includesString(allowList?.rails, rail),
+    includesString(allowList?.rails, rail)
+      ? 'Rail is in the intent allow-list'
+      : 'Rail is not in the intent allow-list',
+    { rail },
+  );
+  addCheck(
+    'policy-pack-present',
+    !!policyPackId,
+    policyPackId ? 'Intent declares a policy pack' : 'Intent is missing policy.policyPackId',
+    { policyPackId },
+  );
+
+  return buildPreflightDecision(checks, {
+    policyPackId,
+    intentSummary: {
+      humanId,
+      agentId: principalAgentId,
+      actionType,
+      rail,
+      destination,
+      amount: amountText,
+      currency,
+      expiresAt,
+    },
+  });
+}
+
+function buildPreflightDecision(
+  checks: ProtectedIntentPreflightCheck[],
+  extras: Pick<ProtectedIntentPreflightDecision, 'policyPackId' | 'intentSummary'> = {},
+): ProtectedIntentPreflightDecision {
+  const failed = checks.filter((check) => !check.passed);
+  return {
+    verdict: failed.length === 0 ? 'approved' : 'rejected',
+    reasons: failed.length === 0
+      ? ['All protected intent preflight checks passed']
+      : failed.map((check) => check.reason),
+    checks,
+    ...extras,
   };
 }
 
@@ -117,6 +366,7 @@ export interface ServiceAuthResult {
 export interface ControlPlaneServicePersistence {
   metadataStore?: ControlPlaneMetadataStore;
   traceBackend?: TraceStoreMetricsBackend;
+  approvalJournal?: ApprovalJournalBackend;
 }
 
 export class ControlPlaneService {
@@ -125,9 +375,11 @@ export class ControlPlaneService {
   readonly policyPacks: PolicyPackManager;
   readonly approvalWorkflows: ApprovalWorkflowEngine;
   readonly tenants: TenantManager;
+  readonly protectedIntent?: ProtectedIntentRegistry;
 
   private readonly metadata: ControlPlaneMetadataStore;
   private readonly traceBackend: TraceStoreMetricsBackend;
+  private readonly approvalJournal: ApprovalJournalBackend;
   private readonly ready: Promise<void>;
   private mutationChain = Promise.resolve<void>(undefined);
   private metadataRevision = 0;
@@ -136,16 +388,33 @@ export class ControlPlaneService {
     this.config = defaultConfig(config);
     this.metadata = persistence?.metadataStore ?? new JSONFileMetadataStore(this.config.dataDir);
     this.traceBackend = persistence?.traceBackend ?? new FileTraceStoreBackend(this.config.dataDir);
+    this.approvalJournal =
+      persistence?.approvalJournal ?? new FileApprovalJournal(this.config.dataDir);
     this.traces = new TraceStore(this.traceBackend, this.config.traceRetentionDays);
     this.policyPacks = new PolicyPackManager();
     this.approvalWorkflows = new ApprovalWorkflowEngine();
     this.tenants = new TenantManager();
+    if (this.config.protectedIntent && this.config.protectedIntent.keys.length > 0) {
+      this.protectedIntent = new ProtectedIntentRegistry({
+        keys: this.config.protectedIntent.keys,
+        replayWindowMs: this.config.protectedIntent.replayWindowMs,
+      });
+    }
     this.ready = this.initialize();
   }
 
   private async initialize(): Promise<void> {
     const snapshot = await this.metadata.load();
     this.hydrate(snapshot);
+    // Replay any journal events that were written but not yet reflected in
+    // the main snapshot (crash between journal append and snapshot save).
+    const journalEvents = await this.approvalJournal.read();
+    const applied = replayApprovalJournal(journalEvents, this.approvalWorkflows);
+    if (applied > 0) {
+      // Persist recovered state and compact journal.
+      await this.persistMetadata();
+      await this.approvalJournal.truncate();
+    }
     const changed = await this.ensureBootstrapTokens(snapshot);
     if (changed) {
       await this.persistMetadata();
@@ -225,6 +494,8 @@ export class ControlPlaneService {
   private async persistMetadata(expectedRevision = this.metadataRevision): Promise<void> {
     const saved = await this.metadata.save(this.snapshot(), expectedRevision);
     this.hydrate(saved);
+    // Journal has been incorporated into the committed snapshot; safe to truncate.
+    await this.approvalJournal.truncate();
   }
 
   private async ensureReady(): Promise<void> {
@@ -513,26 +784,43 @@ export class ControlPlaneService {
   }
 
   async startApproval(options: ApprovalStartOptions): Promise<ActiveApproval> {
-    return this.queueMutation(() =>
-      this.approvalWorkflows.startApproval(
+    return this.queueMutation(async () => {
+      const approval = this.approvalWorkflows.startApproval(
         options.workflowId,
         options.runId,
         options.agentId,
         options.proposal,
         options.riskScore,
-      ),
-    );
+      );
+      await this.approvalJournal.append({
+        type: 'start',
+        at: Date.now(),
+        approval: { ...approval, approvals: [...approval.approvals] },
+      });
+      return approval;
+    });
   }
 
   async voteApproval(options: ApprovalVoteOptions): Promise<ActiveApproval> {
-    return this.queueMutation(() =>
-      this.approvalWorkflows.vote(
+    return this.queueMutation(async () => {
+      const approval = this.approvalWorkflows.vote(
         options.approvalId,
         options.approver,
         options.approved,
         options.reason,
-      ),
-    );
+      );
+      const latestVote = approval.approvals[approval.approvals.length - 1];
+      if (latestVote) {
+        await this.approvalJournal.append({
+          type: 'vote',
+          at: Date.now(),
+          approvalId: approval.id,
+          vote: { ...latestVote },
+          resolution: approval.resolution,
+        });
+      }
+      return approval;
+    });
   }
 
   async getApproval(id: string): Promise<ActiveApproval | undefined> {
@@ -555,12 +843,106 @@ export class ControlPlaneService {
   }
 
   async processApprovalTimeouts(): Promise<ActiveApproval[]> {
-    return this.queueMutation(() => this.approvalWorkflows.processTimeouts());
+    return this.queueMutation(async () => {
+      const processed = this.approvalWorkflows.processTimeouts();
+      for (const approval of processed) {
+        await this.approvalJournal.append({
+          type: 'timeout',
+          at: Date.now(),
+          approvalId: approval.id,
+          newStep: approval.resolution ? undefined : approval.currentStep,
+          newDeadline: approval.resolution ? undefined : approval.currentStepDeadline,
+          resolution: approval.resolution,
+        });
+      }
+      return processed;
+    });
   }
 
   async ingestTrace(options: IngestOptions): Promise<TraceRecord> {
     await this.ensureReady();
     return this.traces.ingest(options);
+  }
+
+  /**
+   * Discovery endpoint payload — public keys clients use to encrypt envelopes.
+   * Returns an empty list when the protected-intent feature is not configured.
+   */
+  listProtectedIntentKeys(): PublishedRecipientKey[] {
+    return this.protectedIntent ? this.protectedIntent.publishedKeys() : [];
+  }
+
+  /**
+   * Decrypt and accept a protected-intent envelope. Throws when the feature is
+   * not configured or when decryption / replay / hash verification fails.
+   *
+   * The decrypted plaintext is returned to the caller; downstream PolicyEngine
+   * + approval pipeline integration is intentionally left to the caller so the
+   * ingress layer can stay thin and observable.
+   */
+  async submitProtectedIntent(envelope: ProtectedIntentEnvelope): Promise<ProtectedIntentSubmission> {
+    await this.ensureReady();
+    if (!this.protectedIntent) {
+      throw new Error('protected-intent feature is not configured on this control-plane');
+    }
+    const decrypted = this.protectedIntent.decrypt(envelope);
+    return {
+      plaintext: decrypted.plaintext.toString('utf8'),
+      plaintextBase64Url: decrypted.plaintext
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, ''),
+      envelope: {
+        keyId: decrypted.envelope.keyId,
+        agentId: decrypted.envelope.agentId,
+        submittedAt: decrypted.envelope.submittedAt,
+        plaintextHash: decrypted.envelope.plaintextHash,
+        nonce: decrypted.envelope.nonce,
+      },
+      acceptedAt: Date.now(),
+    };
+  }
+
+  /**
+   * Pilot preflight for payment intents submitted through the protected-intent
+   * path. This is intentionally deterministic and stateless: it validates the
+   * envelope, checks the intent's declared policy caps / allow-list / expiry,
+   * and returns an evidence bundle Modexia can attach to its settlement record.
+   */
+  async preflightProtectedIntent(envelope: ProtectedIntentEnvelope): Promise<ProtectedIntentPreflightResult> {
+    const submission = await this.submitProtectedIntent(envelope);
+    const decision = evaluateProtectedPaymentIntent(submission, Date.now());
+    const trace: TraceRecord = {
+      id: `trace_${submission.envelope.plaintextHash.slice(0, 16)}`,
+      runId: `protected_${submission.envelope.plaintextHash.slice(0, 16)}`,
+      agentId: submission.envelope.agentId,
+      startedAt: submission.envelope.submittedAt,
+      completedAt: submission.acceptedAt,
+      state: decision.verdict === 'approved' ? 'completed' : 'failed',
+      turnCount: 1,
+      totalTokens: 0,
+      events: [
+        {
+          type: 'protected_intent_preflight',
+          plaintextHash: submission.envelope.plaintextHash,
+          agentId: submission.envelope.agentId,
+          decision,
+        },
+      ],
+      metadata: {
+        protectedIntent: true,
+        plaintextHash: submission.envelope.plaintextHash,
+        policyPackId: decision.policyPackId,
+      },
+    };
+    const evidenceBundle = await generateEvidenceBundle(trace, [decision], []);
+
+    return {
+      ...submission,
+      decision,
+      evidenceBundle,
+    };
   }
 
   async getTrace(id: string): Promise<TraceRecord | undefined> {

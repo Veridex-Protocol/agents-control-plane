@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "revision": 70,
+  "updatedAt": 1777639885064,
+  "authTokens": [],
+  "tenants": [],
+  "workspaces": [],
+  "policyPacks": [],
+  "approvalWorkflows": [],
+  "activeApprovals": [],
+  "agentManifests": [],
+  "workspaceResources": [],
+  "tasks": [],
+  "deploymentRevisions": [],
+  "incidents": [],
+  "evalSuites": [],
+  "evalRuns": [],
+  "policyBindings": [],
+  "assignments": [],
+  "maintenanceJobs": [],
+  "resourceMutationProposals": []
+}
