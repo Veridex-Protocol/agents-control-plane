@@ -8,7 +8,7 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 
-import { ControlPlaneService, type ServiceAuthResult } from './service';
+import type { ControlPlaneService, ServiceAuthResult } from './service';
 import type { AuditExportOptions, ExportFormat } from './audit-export';
 import type { ControlPlaneRole, TraceQuery } from './types';
 

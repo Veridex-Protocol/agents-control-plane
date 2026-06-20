@@ -12,12 +12,10 @@ import {
   FileApprovalJournal,
   replayApprovalJournal,
   type ApprovalJournalBackend,
-  type ApprovalJournalEvent,
 } from './approval-journal';
 import {
   ProtectedIntentRegistry,
   type ProtectedIntentEnvelope,
-  type ProtectedIntentKeyPair,
   type PublishedRecipientKey,
 } from './protected-intent';
 import {
@@ -1108,7 +1106,7 @@ export class ControlPlaneService {
       list = list.filter((r) => r.status === filter.status);
     }
     if (filter?.tags && filter.tags.length > 0) {
-      list = list.filter((r) => filter.tags!.some((t) => r.tags?.includes(t)));
+      list = list.filter((r) => filter.tags?.some((t) => r.tags?.includes(t)));
     }
     return list.map((r) => clone(r));
   }

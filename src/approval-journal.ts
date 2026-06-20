@@ -19,7 +19,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { ActiveApproval, ApprovalVote } from './approval-workflows';
@@ -70,7 +70,7 @@ export class FileApprovalJournal implements ApprovalJournalBackend {
   }
 
   async append(event: ApprovalJournalEvent): Promise<void> {
-    const line = JSON.stringify(event) + '\n';
+    const line = `${JSON.stringify(event)}\n`;
     this.writeChain = this.writeChain.then(async () => {
       await this.ensureParent();
       const handle = await open(this.filePath, 'a');

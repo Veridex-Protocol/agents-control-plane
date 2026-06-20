@@ -7,7 +7,7 @@
  * timeout-based escalation, and auto-approve policies.
  */
 
-import type { ApprovalWorkflow, ApprovalEscalationStep } from './types';
+import type { ApprovalWorkflow, } from './types';
 
 /** The state of an active approval request within a workflow. */
 export interface ActiveApproval {

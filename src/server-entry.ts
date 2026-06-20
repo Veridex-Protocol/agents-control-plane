@@ -164,26 +164,6 @@ async function main(): Promise<void> {
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
-
-  console.log(
-    JSON.stringify(
-      {
-        service: 'veridex-control-plane',
-        host: service.config.host,
-        port: service.config.port,
-        storageBackend: service.config.storageBackend,
-        dataDir: service.config.dataDir,
-        postgresTables: postgresConfig
-          ? {
-              metadata: postgresConfig.metadataTableName ?? 'veridex_control_plane_metadata',
-              traces: postgresConfig.tracesTableName ?? 'veridex_control_plane_traces',
-            }
-          : undefined,
-      },
-      null,
-      2,
-    ),
-  );
 }
 
 void main().catch((error) => {
