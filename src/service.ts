@@ -6,6 +6,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { verifyChargeAuthorizationSignature, type ChargeAuthorization } from '@veridex/platform-events';
 
 import { ApprovalWorkflowEngine, type ActiveApproval, type ApprovalVote } from './approval-workflows';
 import {
@@ -61,6 +62,13 @@ import type {
   TraceRecord,
   Workspace,
   WorkspaceResource,
+  SponsorshipPolicyData,
+  GatewayConfigData,
+  GatewayDeploymentSpec,
+  ChargeAuthorizationData,
+  TeamInvitationData,
+  PaymentProjectionData,
+  PaymentResourceData,
 } from './types';
 
 function clone<T>(value: T): T {
@@ -1086,19 +1094,33 @@ export class ControlPlaneService {
     });
   }
 
-  async getWorkspaceResource(id: string): Promise<WorkspaceResource | undefined> {
+  async getWorkspaceResource(id: string, tenantId?: string): Promise<WorkspaceResource | undefined> {
     await this.ensureReady();
     await this.refreshState();
-    const resource = this._workspaceResources.find((r) => r.id === id);
+    const resource = this._workspaceResources.find((r) =>
+      r.id === id && (!tenantId || r.tenantId === tenantId)
+    );
     return resource ? clone(resource) : undefined;
   }
 
   async listWorkspaceResources(
-    filter?: { resourceType?: string; status?: WorkspaceResource['status']; tags?: string[] },
+    filter?: {
+      tenantId?: string;
+      workspaceId?: string;
+      resourceType?: string;
+      status?: WorkspaceResource['status'];
+      tags?: string[];
+    },
   ): Promise<WorkspaceResource[]> {
     await this.ensureReady();
     await this.refreshState();
     let list = this._workspaceResources;
+    if (filter?.tenantId) {
+      list = list.filter((r) => r.tenantId === filter.tenantId);
+    }
+    if (filter?.workspaceId) {
+      list = list.filter((r) => r.workspaceId === filter.workspaceId);
+    }
     if (filter?.resourceType) {
       list = list.filter((r) => r.resourceType === filter.resourceType);
     }
@@ -1111,12 +1133,392 @@ export class ControlPlaneService {
     return list.map((r) => clone(r));
   }
 
+  async getSponsorshipPolicy(
+    tenantId: string,
+    appId: string,
+    environment: 'test' | 'live',
+  ): Promise<WorkspaceResource | undefined> {
+    const policies = await this.listWorkspaceResources({
+      tenantId,
+      resourceType: 'sponsorship_policy',
+      status: 'active',
+    });
+    return policies.find((resource) =>
+      resource.data.appId === appId && resource.data.environment === environment
+    );
+  }
+
+  async putSponsorshipPolicy(
+    tenantId: string,
+    policy: SponsorshipPolicyData,
+  ): Promise<WorkspaceResource> {
+    validateSponsorshipPolicy(policy);
+    const existing = await this.getSponsorshipPolicy(tenantId, policy.appId, policy.environment);
+    if (existing) {
+      const updated = await this.updateWorkspaceResource(existing.id, {
+        data: policy as unknown as Record<string, unknown>,
+        updatedBy: policy.updatedBy,
+        reviewStatus: policy.environment === 'live' ? 'review_required' : 'unreviewed',
+      });
+      if (!updated) throw new Error('Sponsorship policy disappeared during update');
+      return updated;
+    }
+    return this.createWorkspaceResource({
+      tenantId,
+      resourceType: 'sponsorship_policy',
+      name: `${policy.appId}:${policy.environment}`,
+      status: 'active',
+      data: policy as unknown as Record<string, unknown>,
+      tags: ['sponsorship', policy.environment, policy.appId],
+      createdBy: policy.updatedBy,
+      updatedBy: policy.updatedBy,
+      reviewStatus: policy.environment === 'live' ? 'review_required' : 'unreviewed',
+    });
+  }
+
+  async listGatewayConfigs(
+    tenantId: string,
+    appId: string,
+    environment: 'test' | 'live',
+  ): Promise<WorkspaceResource[]> {
+    const resources = await this.listWorkspaceResources({
+      tenantId,
+      resourceType: 'gateway_config',
+    });
+    return resources.filter((resource) =>
+      resource.data.appId === appId && resource.data.environment === environment
+    );
+  }
+
+  async createGatewayConfig(tenantId: string, config: GatewayConfigData): Promise<WorkspaceResource> {
+    validateGatewayConfig(config);
+    return this.createWorkspaceResource({
+      tenantId,
+      resourceType: 'gateway_config',
+      name: config.name,
+      status: config.state === 'disabled' ? 'archived' : 'active',
+      data: config as unknown as Record<string, unknown>,
+      tags: ['gateway', config.environment, config.appId, ...config.targets.map((target) => target.network)],
+      createdBy: config.updatedBy,
+      updatedBy: config.updatedBy,
+      reviewStatus: config.environment === 'live' || config.state === 'active' ? 'review_required' : 'unreviewed',
+    });
+  }
+
+  async updateGatewayConfig(
+    tenantId: string,
+    gatewayId: string,
+    appId: string,
+    environment: 'test' | 'live',
+    config: GatewayConfigData,
+  ): Promise<WorkspaceResource | undefined> {
+    validateGatewayConfig(config);
+    if (config.appId !== appId || config.environment !== environment) throw new Error('Gateway scope cannot change');
+    const existing = await this.getWorkspaceResource(gatewayId, tenantId);
+    if (!existing || existing.resourceType !== 'gateway_config'
+      || existing.data.appId !== appId || existing.data.environment !== environment) return undefined;
+    return this.updateWorkspaceResource(gatewayId, {
+      name: config.name,
+      status: config.state === 'disabled' ? 'archived' : 'active',
+      data: config as unknown as Record<string, unknown>,
+      tags: ['gateway', config.environment, config.appId, ...config.targets.map((target) => target.network)],
+      updatedBy: config.updatedBy,
+      reviewStatus: config.environment === 'live' || config.state === 'active' ? 'review_required' : 'unreviewed',
+    }, tenantId);
+  }
+
+  async getGatewayDeploymentSpecs(
+    tenantId: string,
+    gatewayId: string,
+    appId: string,
+    environment: 'test' | 'live',
+  ): Promise<GatewayDeploymentSpec[] | undefined> {
+    const resource = await this.getWorkspaceResource(gatewayId, tenantId);
+    if (!resource || resource.resourceType !== 'gateway_config'
+      || resource.data.appId !== appId || resource.data.environment !== environment) return undefined;
+    const config = resource.data as unknown as GatewayConfigData;
+    validateGatewayConfig(config);
+    return config.targets.map((target, index) => ({
+      gatewayId,
+      targetId: `${gatewayId}:${index}`,
+      appId,
+      environment,
+      state: config.state,
+      image: target.network.startsWith('stellar:')
+        ? 'ghcr.io/veridex/stellar-x402-gateway:0.1.0'
+        : 'ghcr.io/veridex/multichain-gateway:0.1.0',
+      config: {
+        id: `${gatewayId}-${index}`,
+        upstream: config.upstreamUrl,
+        publicBaseUrl: config.publicBaseUrl,
+        facilitatorUrl: target.facilitatorUrl,
+        payTo: target.payTo,
+        network: target.network,
+        asset: target.asset,
+        price: target.defaultPrice,
+        state: config.state,
+        routes: config.routes?.length
+          ? config.routes.map((route) => ({ path: route.path, methods: route.methods, price: route.price }))
+          : [{ path: '/*', methods: config.allowedMethods }],
+      },
+      requiredSecretRefs: ['DATABASE_URL', 'GATEWAY_MANAGEMENT_TOKEN'],
+      environmentVariables: {
+        GATEWAY_TENANT_ID: tenantId,
+        GATEWAY_APP_ID: appId,
+        GATEWAY_ENVIRONMENT: environment,
+        PLATFORM_EVENT_URL: '/v1/platform-events',
+      },
+    }));
+  }
+
+  async createChargeAuthorization(tenantId: string, authorization: ChargeAuthorizationData): Promise<WorkspaceResource> {
+    validateChargeAuthorization(tenantId, authorization);
+    const { updatedBy: _updatedBy, ...signedAuthorization } = authorization;
+    if (!await verifyChargeAuthorizationSignature(signedAuthorization as ChargeAuthorization)) {
+      throw new Error('Charge authorization signature is invalid');
+    }
+    return this.queueMutation(() => {
+      if (this._workspaceResources.some((resource) => resource.tenantId === tenantId
+        && resource.resourceType === 'charge_authorization'
+        && (resource.data.nonce === authorization.nonce
+          || resource.data.authorizationId === authorization.authorizationId))) {
+        throw new Error('Charge authorization nonce or ID already used');
+      }
+      const now = Date.now();
+      const resource: WorkspaceResource = {
+        id: `wr_${randomBytes(12).toString('hex')}`,
+        tenantId,
+        resourceType: 'charge_authorization',
+        name: authorization.authorizationId,
+        status: 'active',
+        data: authorization as unknown as Record<string, unknown>,
+        tags: ['charge-authorization', authorization.appId, authorization.environment, authorization.chain],
+        createdBy: authorization.updatedBy,
+        updatedBy: authorization.updatedBy,
+        reviewStatus: authorization.environment === 'live' ? 'review_required' : 'unreviewed',
+        version: 1,
+        resourceVersion: { version: 1, updatedAt: now, updatedBy: authorization.updatedBy },
+        createdAt: now,
+        updatedAt: now,
+      };
+      this._workspaceResources.push(resource);
+      return clone(resource);
+    });
+  }
+
+  async consumeChargeAuthorization(
+    tenantId: string,
+    appId: string,
+    authorizationId: string,
+    quoteId: string,
+    termsHash: string,
+    environment: 'test' | 'live',
+    chain: string,
+    chargeAsset: string,
+    maximumCharge: string,
+    payer: string,
+    nonce: string,
+    expiresAt: string,
+    recurring: boolean,
+    refundPolicyHash: string,
+    signatureAlgorithm: 'ed25519',
+    signerPublicKey: string,
+    signature: string,
+    executionId: string,
+    consumedBy: string,
+  ): Promise<WorkspaceResource> {
+    return this.queueMutation(() => {
+      const resource = this._workspaceResources.find((candidate) =>
+        candidate.tenantId === tenantId
+        && candidate.resourceType === 'charge_authorization'
+        && candidate.status === 'active'
+        && candidate.data.authorizationId === authorizationId
+      );
+      if (!resource
+        || resource.data.appId !== appId
+        || resource.data.quoteId !== quoteId
+        || resource.data.termsHash !== termsHash
+        || resource.data.environment !== environment
+        || resource.data.chain !== chain
+        || resource.data.chargeAsset !== chargeAsset
+        || resource.data.maximumCharge !== maximumCharge
+        || resource.data.payer !== payer
+        || resource.data.nonce !== nonce
+        || resource.data.expiresAt !== expiresAt
+        || resource.data.recurring !== recurring
+        || resource.data.refundPolicyHash !== refundPolicyHash
+        || resource.data.signatureAlgorithm !== signatureAlgorithm
+        || resource.data.signerPublicKey !== signerPublicKey
+        || resource.data.signature !== signature) {
+        throw new Error('Charge authorization scope mismatch');
+      }
+      if (resource.data.consumedExecutionId === executionId) return clone(resource);
+      if (resource.data.consumedAt && resource.data.recurring !== true) throw new Error('Charge authorization already consumed');
+      if (Date.parse(String(resource.data.expiresAt)) <= Date.now()) throw new Error('Charge authorization expired');
+      resource.data = { ...resource.data, consumedAt: Date.now(), consumedBy, consumedExecutionId: executionId };
+      resource.updatedBy = consumedBy;
+      resource.version += 1;
+      resource.updatedAt = Date.now();
+      resource.resourceVersion = { version: resource.version, updatedAt: resource.updatedAt, updatedBy: consumedBy };
+      return clone(resource);
+    });
+  }
+
+  async listTeamInvitations(tenantId: string, appId: string): Promise<WorkspaceResource[]> {
+    const now = Date.now();
+    return (await this.listWorkspaceResources({ tenantId, resourceType: 'team_invitation' }))
+      .filter((resource) => resource.data.appId === appId)
+      .map((resource) => {
+        if (resource.data.status === 'pending' && Date.parse(String(resource.data.expiresAt)) <= now) {
+          return { ...resource, data: { ...resource.data, status: 'expired' } };
+        }
+        return resource;
+      });
+  }
+
+  async createTeamInvitation(
+    tenantId: string,
+    appId: string,
+    email: string,
+    role: TeamInvitationData['role'],
+    invitedBy: string,
+  ): Promise<WorkspaceResource> {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(normalizedEmail)) throw new Error('Valid invitation email required');
+    if (!['admin', 'operator', 'developer', 'viewer'].includes(role)) throw new Error('Invalid invitation role');
+    return this.queueMutation(() => {
+      const duplicate = this._workspaceResources.some((resource) =>
+        resource.tenantId === tenantId
+        && resource.resourceType === 'team_invitation'
+        && resource.data.appId === appId
+        && resource.data.email === normalizedEmail
+        && resource.data.status === 'pending'
+        && Date.parse(String(resource.data.expiresAt)) > Date.now()
+      );
+      if (duplicate) throw new Error('A pending invitation already exists for this email');
+      const now = Date.now();
+      const data: TeamInvitationData = {
+        schemaVersion: 'veridex.team-invitation/v1',
+        appId,
+        email: normalizedEmail,
+        role,
+        status: 'pending',
+        expiresAt: new Date(now + 7 * 24 * 60 * 60 * 1_000).toISOString(),
+        invitedBy,
+      };
+      const resource: WorkspaceResource = {
+        id: `wr_${randomBytes(12).toString('hex')}`,
+        tenantId,
+        resourceType: 'team_invitation',
+        name: normalizedEmail,
+        status: 'active',
+        data: data as unknown as Record<string, unknown>,
+        tags: ['team-invitation', appId, role],
+        createdBy: invitedBy,
+        updatedBy: invitedBy,
+        reviewStatus: role === 'admin' ? 'review_required' : 'auto_accepted',
+        version: 1,
+        resourceVersion: { version: 1, updatedAt: now, updatedBy: invitedBy },
+        createdAt: now,
+        updatedAt: now,
+      };
+      this._workspaceResources.push(resource);
+      return clone(resource);
+    });
+  }
+
+  async revokeTeamInvitation(
+    tenantId: string,
+    appId: string,
+    invitationId: string,
+    revokedBy: string,
+  ): Promise<WorkspaceResource | undefined> {
+    return this.queueMutation(() => {
+      const resource = this._workspaceResources.find((candidate) =>
+        candidate.id === invitationId
+        && candidate.tenantId === tenantId
+        && candidate.resourceType === 'team_invitation'
+        && candidate.data.appId === appId
+      );
+      if (!resource) return undefined;
+      resource.data = { ...resource.data, status: 'revoked', revokedAt: new Date().toISOString(), revokedBy };
+      resource.status = 'archived';
+      resource.updatedBy = revokedBy;
+      resource.version += 1;
+      resource.updatedAt = Date.now();
+      resource.resourceVersion = { version: resource.version, updatedAt: resource.updatedAt, updatedBy: revokedBy };
+      return clone(resource);
+    });
+  }
+
+  async listPaymentResources(tenantId: string, appId: string, environment?: 'test' | 'live') {
+    return (await this.listWorkspaceResources({ tenantId, resourceType: 'payment_resource' }))
+      .filter((resource) => resource.data.appId === appId
+        && (environment === undefined || resource.data.environment === environment));
+  }
+
+  async createPaymentResource(tenantId: string, resource: PaymentResourceData): Promise<WorkspaceResource> {
+    validatePaymentResource(resource);
+    return this.createWorkspaceResource({
+      tenantId,
+      resourceType: 'payment_resource',
+      name: resource.name,
+      status: 'active',
+      data: resource as unknown as Record<string, unknown>,
+      tags: ['payment-resource', resource.appId, resource.environment, resource.network, resource.bazaarStatus],
+      createdBy: resource.updatedBy,
+      updatedBy: resource.updatedBy,
+      reviewStatus: resource.environment === 'live' ? 'review_required' : 'unreviewed',
+    });
+  }
+
+  async publishPaymentResource(tenantId: string, appId: string, resourceId: string, updatedBy: string) {
+    const resource = await this.getWorkspaceResource(resourceId, tenantId);
+    if (!resource || resource.resourceType !== 'payment_resource' || resource.data.appId !== appId) return undefined;
+    const data = { ...resource.data, bazaarStatus: 'published', updatedBy };
+    return this.updateWorkspaceResource(resourceId, {
+      data,
+      tags: (resource.tags ?? []).filter((tag) => tag !== 'draft').concat('published'),
+      updatedBy,
+      reviewStatus: resource.data.environment === 'live' ? 'review_required' : 'auto_accepted',
+    }, tenantId);
+  }
+
+  async ingestPaymentProjection(tenantId: string, projection: PaymentProjectionData): Promise<WorkspaceResource> {
+    if (projection.tenantId !== tenantId) throw new Error('Payment projection tenant mismatch');
+    if (!projection.eventId || !projection.appId || !Number.isFinite(Date.parse(projection.occurredAt))) {
+      throw new Error('Payment projection identity is invalid');
+    }
+    const existing = (await this.listWorkspaceResources({ tenantId, resourceType: 'payment_projection' }))
+      .find((resource) => resource.data.eventId === projection.eventId);
+    if (existing) return existing;
+    return this.createWorkspaceResource({
+      tenantId,
+      resourceType: 'payment_projection',
+      name: projection.eventId,
+      status: 'active',
+      data: projection as unknown as Record<string, unknown>,
+      tags: ['payment', projection.appId, projection.environment, projection.eventType],
+      createdBy: 'platform-event-consumer',
+      reviewStatus: 'auto_accepted',
+    });
+  }
+
+  async listPaymentProjections(tenantId: string, appId: string) {
+    return (await this.listWorkspaceResources({ tenantId, resourceType: 'payment_projection' }))
+      .filter((resource) => resource.data.appId === appId)
+      .sort((left, right) => String(right.data.occurredAt).localeCompare(String(left.data.occurredAt)));
+  }
+
   async updateWorkspaceResource(
     id: string,
     updates: Partial<Pick<WorkspaceResource, 'name' | 'status' | 'data' | 'tags' | 'metadata' | 'updatedBy' | 'reviewStatus' | 'evidenceRefs' | 'confidence'>>,
+    tenantId?: string,
   ): Promise<WorkspaceResource | undefined> {
     return this.queueMutation(() => {
-      const resource = this._workspaceResources.find((r) => r.id === id);
+      const resource = this._workspaceResources.find((r) =>
+        r.id === id && (!tenantId || r.tenantId === tenantId)
+      );
       if (!resource) return undefined;
       Object.assign(resource, updates);
       resource.version += 1;
@@ -1133,9 +1535,11 @@ export class ControlPlaneService {
     });
   }
 
-  async deleteWorkspaceResource(id: string): Promise<boolean> {
+  async deleteWorkspaceResource(id: string, tenantId?: string): Promise<boolean> {
     return this.queueMutation(() => {
-      const idx = this._workspaceResources.findIndex((r) => r.id === id);
+      const idx = this._workspaceResources.findIndex((r) =>
+        r.id === id && (!tenantId || r.tenantId === tenantId)
+      );
       if (idx === -1) return false;
       this._workspaceResources.splice(idx, 1);
       return true;
@@ -1724,5 +2128,88 @@ export class ControlPlaneService {
 
   async close(): Promise<void> {
     await this.metadata.close?.();
+  }
+}
+
+function validateSponsorshipPolicy(policy: SponsorshipPolicyData): void {
+  if (policy.schemaVersion !== 'veridex.sponsorship-policy/v1') throw new Error('Unsupported sponsorship policy version');
+  for (const [field, value] of [
+    ['perTransactionLimit', policy.perTransactionLimit],
+    ['dailyLimit', policy.dailyLimit],
+    ['monthlyLimit', policy.monthlyLimit],
+  ] as const) {
+    if (!/^(0|[1-9]\d*)$/.test(value)) throw new Error(`${field} must be a canonical atomic amount`);
+  }
+  if (!Number.isInteger(policy.subsidyBps) || policy.subsidyBps < 0 || policy.subsidyBps > 10_000) {
+    throw new Error('subsidyBps must be between 0 and 10000');
+  }
+  if (!Number.isInteger(policy.markupBps) || policy.markupBps < 0 || policy.markupBps > 10_000) {
+    throw new Error('markupBps must be between 0 and 10000');
+  }
+  if ((policy.mode === 'user_reimburses' || policy.mode === 'hybrid') && !policy.requireUserAuthorization) {
+    throw new Error('User reimbursement requires explicit user authorization');
+  }
+}
+
+function validateGatewayConfig(config: GatewayConfigData): void {
+  if (config.schemaVersion !== 'veridex.gateway-config/v1') throw new Error('Unsupported gateway config version');
+  if (!config.appId || !config.name.trim()) throw new Error('Gateway appId and name are required');
+  if (config.targets.length === 0 || config.targets.some((target) => !/^[-a-z0-9]{3,12}:[-_a-zA-Z0-9.]{1,64}$/.test(target.network))) {
+    throw new Error('Gateway targets must use valid network identifiers');
+  }
+  if (config.schemes.length === 0 || config.allowedMethods.length === 0) {
+    throw new Error('Gateway schemes and allowedMethods are required');
+  }
+  let upstream: URL;
+  let publicBase: URL;
+  try {
+    upstream = new URL(config.upstreamUrl);
+    publicBase = new URL(config.publicBaseUrl);
+  } catch {
+    throw new Error('Gateway upstreamUrl and publicBaseUrl must be valid URLs');
+  }
+  if (upstream.protocol !== 'https:' && !(config.environment === 'test' && upstream.protocol === 'http:')) {
+    throw new Error('Gateway upstreamUrl must use HTTPS outside test environments');
+  }
+  if (publicBase.protocol !== 'https:' && !(config.environment === 'test' && publicBase.protocol === 'http:')) {
+    throw new Error('Gateway publicBaseUrl must use HTTPS outside test environments');
+  }
+  for (const target of config.targets) {
+    if (!target.payTo || !target.asset || !/^[1-9]\d*$/.test(target.defaultPrice)) {
+      throw new Error('Gateway targets require payTo, asset, and a positive atomic defaultPrice');
+    }
+    const facilitator = new URL(target.facilitatorUrl);
+    if (facilitator.protocol !== 'https:' && !(config.environment === 'test' && facilitator.protocol === 'http:')) {
+      throw new Error('Gateway facilitatorUrl must use HTTPS outside test environments');
+    }
+  }
+}
+
+function validateChargeAuthorization(tenantId: string, authorization: ChargeAuthorizationData): void {
+  if (authorization.schemaVersion !== 'veridex.charge-authorization/v1') throw new Error('Unsupported charge authorization version');
+  if (authorization.tenantId !== tenantId) throw new Error('Charge authorization tenant mismatch');
+  if (!authorization.appId || !authorization.authorizationId || !authorization.quoteId || !authorization.payer) {
+    throw new Error('Charge authorization identity fields are required');
+  }
+  if (!/^(0|[1-9]\d*)$/.test(authorization.maximumCharge)) throw new Error('maximumCharge must be a canonical atomic amount');
+  if (!authorization.nonce || !authorization.signature) throw new Error('Charge authorization nonce and signature are required');
+  if (authorization.signatureAlgorithm !== 'ed25519' || !authorization.signerPublicKey) {
+    throw new Error('Charge authorization signature metadata is required');
+  }
+  if (!/^0x[0-9a-fA-F]{64}$/.test(authorization.termsHash)
+    || !/^0x[0-9a-fA-F]{64}$/.test(authorization.refundPolicyHash)) {
+    throw new Error('Charge authorization hashes must be bytes32 hex');
+  }
+  if (Date.parse(authorization.expiresAt) <= Date.now()) throw new Error('Charge authorization expired');
+}
+
+function validatePaymentResource(resource: PaymentResourceData): void {
+  if (resource.schemaVersion !== 'veridex.payment-resource/v1') throw new Error('Unsupported payment resource version');
+  if (!resource.appId || !resource.gatewayId || !resource.name || !resource.path.startsWith('/')) {
+    throw new Error('Payment resource identity and path are required');
+  }
+  if (!/^[1-9]\d*$/.test(resource.amount)) throw new Error('Payment resource amount must be a positive atomic amount');
+  if (!resource.network.includes(':') || !resource.asset || !resource.payTo || resource.methods.length === 0) {
+    throw new Error('Payment resource network, asset, payTo and methods are required');
   }
 }

@@ -383,6 +383,145 @@ export interface AgentManifest {
 /** Status of a generic workspace resource. */
 export type WorkspaceResourceStatus = 'active' | 'archived' | 'deleted';
 
+export type SponsorshipMode =
+  | 'disabled'
+  | 'business_paid'
+  | 'user_reimburses'
+  | 'hybrid'
+  | 'veridex_credits'
+  | 'postpaid_invoice';
+
+export interface SponsorshipPolicyData {
+  schemaVersion: 'veridex.sponsorship-policy/v1';
+  appId: string;
+  environment: 'test' | 'live';
+  mode: SponsorshipMode;
+  enabled: boolean;
+  allowedChains: string[];
+  allowedFeeAssets: string[];
+  allowedOperations: string[];
+  perTransactionLimit: string;
+  dailyLimit: string;
+  monthlyLimit: string;
+  subsidyBps: number;
+  markupBps: number;
+  requireUserAuthorization: boolean;
+  updatedBy: string;
+}
+
+export interface GatewayConfigData {
+  schemaVersion: 'veridex.gateway-config/v1';
+  appId: string;
+  environment: 'test' | 'live';
+  name: string;
+  state: 'draft' | 'active' | 'paused' | 'disabled';
+  targets: Array<{
+    network: string;
+    facilitatorUrl: string;
+    payTo: string;
+    asset: string;
+    defaultPrice: string;
+  }>;
+  schemes: Array<'exact' | 'upto' | 'batch-settlement'>;
+  upstreamUrl: string;
+  publicBaseUrl: string;
+  allowedMethods: Array<'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'>;
+  routes?: Array<{
+    id: string;
+    path: string;
+    methods: Array<'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'>;
+    price: string;
+    name?: string;
+    resourceId?: string;
+  }>;
+  updatedBy: string;
+}
+
+export interface PaymentResourceData {
+  schemaVersion: 'veridex.payment-resource/v1';
+  appId: string;
+  environment: 'test' | 'live';
+  gatewayId: string;
+  name: string;
+  path: string;
+  methods: string[];
+  network: string;
+  scheme: 'exact' | 'upto' | 'batch-settlement';
+  asset: string;
+  amount: string;
+  payTo: string;
+  bazaarStatus: 'draft' | 'published' | 'rejected';
+  updatedBy: string;
+}
+
+export interface PaymentProjectionData {
+  schemaVersion: 'veridex.payment-projection/v1';
+  eventId: string;
+  eventType: string;
+  tenantId: string;
+  appId: string;
+  environment: 'test' | 'live';
+  paymentId?: string;
+  executionId?: string;
+  occurredAt: string;
+  data: Record<string, unknown>;
+}
+
+export interface GatewayDeploymentSpec {
+  gatewayId: string;
+  targetId: string;
+  appId: string;
+  environment: 'test' | 'live';
+  state: GatewayConfigData['state'];
+  image: string;
+  config: {
+    id: string;
+    upstream: string;
+    publicBaseUrl: string;
+    facilitatorUrl: string;
+    payTo: string;
+    network: string;
+    asset: string;
+    price: string;
+    state: GatewayConfigData['state'];
+    routes: Array<{ path: string; methods: GatewayConfigData['allowedMethods'] }>;
+  };
+  requiredSecretRefs: ['DATABASE_URL', 'GATEWAY_MANAGEMENT_TOKEN'];
+  environmentVariables?: Record<string, string>;
+}
+
+export interface ChargeAuthorizationData {
+  schemaVersion: 'veridex.charge-authorization/v1';
+  authorizationId: string;
+  quoteId: string;
+  tenantId: string;
+  appId: string;
+  environment: 'test' | 'live';
+  payer: string;
+  chain: string;
+  chargeAsset: string;
+  maximumCharge: string;
+  nonce: string;
+  expiresAt: string;
+  recurring: boolean;
+  refundPolicyHash: string;
+  termsHash: string;
+  signatureAlgorithm: 'ed25519';
+  signerPublicKey: string;
+  signature: string;
+  updatedBy: string;
+}
+
+export interface TeamInvitationData {
+  schemaVersion: 'veridex.team-invitation/v1';
+  appId: string;
+  email: string;
+  role: 'admin' | 'operator' | 'developer' | 'viewer';
+  status: 'pending' | 'accepted' | 'revoked' | 'expired';
+  expiresAt: string;
+  invitedBy: string;
+}
+
 export interface ResourceVersion {
   version: number;
   updatedAt: number;

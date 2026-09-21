@@ -6,6 +6,7 @@
 
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { cors } from 'hono/cors';
 
 import type { ControlPlaneService, ServiceAuthResult } from './service';
@@ -103,7 +104,10 @@ export function createControlPlaneApp(service: ControlPlaneService): ControlPlan
   requireRole(app, ['admin', 'operator'], '/v1/traces/purge/expired', ['POST']);
   requireRole(app, ['admin', 'operator', 'viewer'], '/v1/audit/*');
   requireRole(app, ['admin', 'operator'], '/v1/agent-manifests', ['POST', 'PATCH', 'DELETE']);
+  requireRole(app, ['admin', 'operator', 'viewer'], '/v1/workspace-resources', ['GET']);
   requireRole(app, ['admin', 'operator'], '/v1/workspace-resources', ['POST', 'PATCH', 'DELETE']);
+  requireRole(app, ['admin', 'operator', 'viewer'], '/v1/apps/*', ['GET']);
+  requireRole(app, ['admin', 'operator'], '/v1/apps/*', ['PUT', 'POST', 'PATCH', 'DELETE']);
   requireRole(app, ['admin', 'operator'], '/v1/tasks', ['POST', 'PATCH', 'DELETE']);
   requireRole(app, ['admin', 'operator'], '/v1/assignments', ['POST', 'PATCH', 'DELETE']);
   requireRole(app, ['admin', 'operator'], '/v1/deployment-revisions', ['POST', 'PATCH', 'DELETE']);
@@ -355,21 +359,238 @@ export function createControlPlaneApp(service: ControlPlaneService): ControlPlan
   });
 
   app.get('/v1/workspace-resources', async (c) => c.json(await service.listWorkspaceResources({
+    tenantId: c.get('auth')?.tenantId,
+    workspaceId: c.req.query('workspaceId') ?? undefined,
     resourceType: c.req.query('resourceType') ?? undefined,
     status: c.req.query('status') as 'active' | 'archived' | 'deleted' | undefined,
     tags: c.req.query('tags')?.split(',').filter(Boolean),
   })));
-  app.post('/v1/workspace-resources', async (c) => c.json(await service.createWorkspaceResource(await c.req.json()), 201));
+  app.post('/v1/workspace-resources', async (c) => {
+    const auth = c.get('auth');
+    const body = await c.req.json();
+    return c.json(await service.createWorkspaceResource({ ...body, tenantId: auth?.tenantId }), 201);
+  });
+
+  app.get('/v1/apps/:appId/environments/:environment/sponsorship-policy', async (c) => {
+    const tenantId = c.get('auth')?.tenantId;
+    if (!tenantId) return jsonError('Tenant scope required', 400);
+    const environment = c.req.param('environment');
+    if (environment !== 'test' && environment !== 'live') return jsonError('Invalid environment', 400);
+    const policy = await service.getSponsorshipPolicy(tenantId, c.req.param('appId'), environment);
+    return policy ? c.json(policy) : jsonError('Sponsorship policy not found', 404);
+  });
+  app.put('/v1/apps/:appId/environments/:environment/sponsorship-policy', async (c) => {
+    const tenantId = c.get('auth')?.tenantId;
+    if (!tenantId) return jsonError('Tenant scope required', 400);
+    const environment = c.req.param('environment');
+    if (environment !== 'test' && environment !== 'live') return jsonError('Invalid environment', 400);
+    const auth = c.get('auth');
+    const body = await c.req.json();
+    return c.json(await service.putSponsorshipPolicy(tenantId, {
+      ...body,
+      appId: c.req.param('appId'),
+      environment,
+      updatedBy: auth?.token.id ?? 'unknown',
+    }));
+  });
+  app.get('/v1/apps/:appId/environments/:environment/gateways', async (c) => {
+    const tenantId = c.get('auth')?.tenantId;
+    if (!tenantId) return jsonError('Tenant scope required', 400);
+    const environment = c.req.param('environment');
+    if (environment !== 'test' && environment !== 'live') return jsonError('Invalid environment', 400);
+    return c.json(await service.listGatewayConfigs(tenantId, c.req.param('appId'), environment));
+  });
+  app.post('/v1/apps/:appId/environments/:environment/gateways', async (c) => {
+    const tenantId = c.get('auth')?.tenantId;
+    if (!tenantId) return jsonError('Tenant scope required', 400);
+    const environment = c.req.param('environment');
+    if (environment !== 'test' && environment !== 'live') return jsonError('Invalid environment', 400);
+    const auth = c.get('auth');
+    const body = await c.req.json();
+    return c.json(await service.createGatewayConfig(tenantId, {
+      ...body,
+      appId: c.req.param('appId'),
+      environment,
+      updatedBy: auth?.token.id ?? 'unknown',
+    }), 201);
+  });
+  app.put('/v1/apps/:appId/environments/:environment/gateways/:gatewayId', async (c) => {
+    const tenantId = c.get('auth')?.tenantId;
+    if (!tenantId) return jsonError('Tenant scope required', 400);
+    const environment = c.req.param('environment');
+    if (environment !== 'test' && environment !== 'live') return jsonError('Invalid environment', 400);
+    const auth = c.get('auth');
+    const gateway = await service.updateGatewayConfig(
+      tenantId,
+      c.req.param('gatewayId'),
+      c.req.param('appId'),
+      environment,
+      { ...await c.req.json(), appId: c.req.param('appId'), environment, updatedBy: auth?.token.id ?? 'unknown' },
+    );
+    return gateway ? c.json(gateway) : jsonError('Gateway not found', 404);
+  });
+  app.get('/v1/apps/:appId/environments/:environment/gateways/:gatewayId/deployment-specs', async (c) => {
+    const tenantId = c.get('auth')?.tenantId;
+    if (!tenantId) return jsonError('Tenant scope required', 400);
+    const environment = c.req.param('environment');
+    if (environment !== 'test' && environment !== 'live') return jsonError('Invalid environment', 400);
+    const specs = await service.getGatewayDeploymentSpecs(
+      tenantId,
+      c.req.param('gatewayId'),
+      c.req.param('appId'),
+      environment,
+    );
+    return specs ? c.json({ specs }) : jsonError('Gateway not found', 404);
+  });
+  app.post('/v1/apps/:appId/charge-authorizations', async (c) => {
+    const tenantId = c.get('auth')?.tenantId;
+    if (!tenantId) return jsonError('Tenant scope required', 400);
+    const auth = c.get('auth');
+    const body = await c.req.json();
+    if (body.appId !== c.req.param('appId')) return jsonError('App scope mismatch', 400);
+    return c.json(await service.createChargeAuthorization(tenantId, {
+      ...body,
+      tenantId,
+      appId: c.req.param('appId'),
+      updatedBy: auth?.token.id ?? 'unknown',
+    }), 201);
+  });
+  app.post('/v1/apps/:appId/charge-authorizations/:authorizationId/consume', async (c) => {
+    const tenantId = c.get('auth')?.tenantId;
+    if (!tenantId) return jsonError('Tenant scope required', 400);
+    const body = await c.req.json();
+    if (!body.quoteId || !body.termsHash || !body.environment || !body.chain
+      || !body.chargeAsset || body.maximumCharge === undefined || !body.payer || !body.nonce
+      || !body.expiresAt || body.recurring === undefined || !body.refundPolicyHash
+      || !body.signatureAlgorithm || !body.signerPublicKey || !body.signature || !body.executionId) {
+      return jsonError('Complete quote and execution scope is required', 400);
+    }
+    try {
+      return c.json(await service.consumeChargeAuthorization(
+        tenantId, c.req.param('appId'), c.req.param('authorizationId'),
+        body.quoteId, body.termsHash, body.environment, body.chain, body.chargeAsset,
+        body.maximumCharge, body.payer, body.nonce, body.expiresAt, body.recurring,
+        body.refundPolicyHash, body.signatureAlgorithm, body.signerPublicKey, body.signature,
+        body.executionId, c.get('auth')?.token.id ?? 'unknown',
+      ));
+    } catch (error) {
+      return jsonError(error instanceof Error ? error.message : 'Charge authorization rejected', 409);
+    }
+  });
+  app.get('/v1/apps/:appId/team-invitations', async (c) => {
+    const tenantId = c.get('auth')?.tenantId;
+    if (!tenantId) return jsonError('Tenant scope required', 400);
+    return c.json({ invitations: await service.listTeamInvitations(tenantId, c.req.param('appId')) });
+  });
+  app.post('/v1/apps/:appId/team-invitations', async (c) => {
+    const auth = c.get('auth');
+    if (!auth?.tenantId) return jsonError('Tenant scope required', 400);
+    const body = await c.req.json();
+    try {
+      return c.json(await service.createTeamInvitation(
+        auth.tenantId,
+        c.req.param('appId'),
+        body.email,
+        body.role,
+        auth.token.id,
+      ), 201);
+    } catch (error) {
+      return jsonError(error instanceof Error ? error.message : 'Invitation rejected', 409);
+    }
+  });
+  app.delete('/v1/apps/:appId/team-invitations/:invitationId', async (c) => {
+    const auth = c.get('auth');
+    if (!auth?.tenantId) return jsonError('Tenant scope required', 400);
+    const invitation = await service.revokeTeamInvitation(
+      auth.tenantId,
+      c.req.param('appId'),
+      c.req.param('invitationId'),
+      auth.token.id,
+    );
+    return invitation ? c.json(invitation) : jsonError('Invitation not found', 404);
+  });
+  app.get('/v1/apps/:appId/resources', async (c) => {
+    const tenantId = c.get('auth')?.tenantId;
+    if (!tenantId) return jsonError('Tenant scope required', 400);
+    const environment = c.req.query('environment');
+    if (environment && environment !== 'test' && environment !== 'live') return jsonError('Invalid environment', 400);
+    return c.json({ resources: await service.listPaymentResources(tenantId, c.req.param('appId'), environment as 'test' | 'live' | undefined) });
+  });
+  app.post('/v1/apps/:appId/resources', async (c) => {
+    const tenantId = c.get('auth')?.tenantId;
+    if (!tenantId) return jsonError('Tenant scope required', 400);
+    const auth = c.get('auth');
+    const body = await c.req.json();
+    return c.json(await service.createPaymentResource(tenantId, {
+      ...body,
+      appId: c.req.param('appId'),
+      updatedBy: auth?.token.id ?? 'unknown',
+    }), 201);
+  });
+  app.post('/v1/apps/:appId/resources/:resourceId/publish', async (c) => {
+    const tenantId = c.get('auth')?.tenantId;
+    if (!tenantId) return jsonError('Tenant scope required', 400);
+    const resource = await service.publishPaymentResource(
+      tenantId, c.req.param('appId'), c.req.param('resourceId'), c.get('auth')?.token.id ?? 'unknown',
+    );
+    return resource ? c.json(resource) : jsonError('Resource not found', 404);
+  });
+  app.get('/v1/apps/:appId/payments', async (c) => {
+    const tenantId = c.get('auth')?.tenantId;
+    if (!tenantId) return jsonError('Tenant scope required', 400);
+    return c.json({ payments: await service.listPaymentProjections(tenantId, c.req.param('appId')) });
+  });
+  app.get('/v1/apps/:appId/bazaar', async (c) => {
+    const tenantId = c.get('auth')?.tenantId;
+    if (!tenantId) return jsonError('Tenant scope required', 400);
+    const query = (c.req.query('q') ?? '').toLowerCase();
+    const resources = (await service.listPaymentResources(tenantId, c.req.param('appId')))
+      .filter((resource) => resource.data.bazaarStatus === 'published')
+      .filter((resource) => !query || resource.name.toLowerCase().includes(query));
+    const bazaarUrl = process.env.BAZAAR_URL;
+    if (!bazaarUrl) return c.json({ resources, source: 'control-plane' });
+    try {
+      const response = await fetch(new URL(`/discovery/search?q=${encodeURIComponent(query)}`, bazaarUrl), {
+        headers: process.env.BAZAAR_INTERNAL_TOKEN ? { Authorization: `Bearer ${process.env.BAZAAR_INTERNAL_TOKEN}` } : {},
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) throw new Error(`Bazaar returned ${response.status}`);
+      const result = await response.json() as { resources?: unknown[]; results?: unknown[] };
+      return c.json({ resources: result.resources ?? result.results ?? [], source: 'bazaar' });
+    } catch {
+      return c.json({ resources, source: 'control-plane-fallback' });
+    }
+  });
+  app.post('/v1/platform-events', async (c) => {
+    const tenantId = c.get('auth')?.tenantId;
+    if (!tenantId) return jsonError('Tenant scope required', 400);
+    const bodyText = await c.req.text();
+    const secret = process.env.PLATFORM_EVENT_HMAC_SECRET;
+    if (secret) {
+      const signature = c.req.header('X-Veridex-Signature') ?? '';
+      const expected = createHmac('sha256', secret).update(bodyText).digest('hex');
+      const expectedBytes = Buffer.from(expected);
+      const signatureBytes = Buffer.from(signature);
+      if (expectedBytes.length !== signatureBytes.length || !timingSafeEqual(expectedBytes, signatureBytes)) {
+        return jsonError('Invalid platform event signature', 401);
+      }
+    }
+    return c.json(await service.ingestPaymentProjection(tenantId, JSON.parse(bodyText)), 202);
+  });
   app.get('/v1/workspace-resources/:id', async (c) => {
-    const resource = await service.getWorkspaceResource(c.req.param('id'));
+    const resource = await service.getWorkspaceResource(c.req.param('id'), c.get('auth')?.tenantId);
     return resource ? c.json(resource) : jsonError('Workspace resource not found', 404);
   });
   app.patch('/v1/workspace-resources/:id', async (c) => {
-    const resource = await service.updateWorkspaceResource(c.req.param('id'), await c.req.json());
+    const resource = await service.updateWorkspaceResource(
+      c.req.param('id'),
+      await c.req.json(),
+      c.get('auth')?.tenantId,
+    );
     return resource ? c.json(resource) : jsonError('Workspace resource not found', 404);
   });
   app.delete('/v1/workspace-resources/:id', async (c) => {
-    const deleted = await service.deleteWorkspaceResource(c.req.param('id'));
+    const deleted = await service.deleteWorkspaceResource(c.req.param('id'), c.get('auth')?.tenantId);
     return deleted ? c.json({ deleted: true }) : jsonError('Workspace resource not found', 404);
   });
 

@@ -3,6 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  CHARGE_AUTHORIZATION_VERSION,
+  createChargeAuthorization,
+  type UnsignedChargeAuthorization,
+} from '@veridex/platform-events';
 
 import {
   ControlPlaneService,
@@ -258,6 +263,7 @@ describe('Workforce OS CRUD', () => {
 
     const fetched = await svc.getWorkspaceResource(res.id);
     expect(fetched?.name).toBe('api-keys');
+    expect(await svc.getWorkspaceResource(res.id, 'tenant_other')).toBeUndefined();
 
     await svc.createWorkspaceResource({
       resourceType: 'dataset',
@@ -278,6 +284,175 @@ describe('Workforce OS CRUD', () => {
 
     expect(await svc.deleteWorkspaceResource(res.id)).toBe(true);
     expect(await svc.deleteWorkspaceResource('nonexistent')).toBe(false);
+  });
+
+  it('stores versioned sponsorship policies with tenant isolation and authorization gates', async () => {
+    const svc = await makeService();
+    const basePolicy = {
+      schemaVersion: 'veridex.sponsorship-policy/v1' as const,
+      appId: 'app_1',
+      environment: 'test' as const,
+      mode: 'business_paid' as const,
+      enabled: true,
+      allowedChains: ['eip155:84532'],
+      allowedFeeAssets: ['eip155:84532/slip44:60'],
+      allowedOperations: ['transfer'],
+      perTransactionLimit: '100',
+      dailyLimit: '1000',
+      monthlyLimit: '10000',
+      subsidyBps: 10_000,
+      markupBps: 0,
+      requireUserAuthorization: false,
+      updatedBy: 'token_admin',
+    };
+
+    const created = await svc.putSponsorshipPolicy('tenant_1', basePolicy);
+    expect(created.version).toBe(1);
+    expect((await svc.getSponsorshipPolicy('tenant_1', 'app_1', 'test'))?.id).toBe(created.id);
+    expect(await svc.getSponsorshipPolicy('tenant_2', 'app_1', 'test')).toBeUndefined();
+
+    const updated = await svc.putSponsorshipPolicy('tenant_1', {
+      ...basePolicy,
+      dailyLimit: '2000',
+    });
+    expect(updated.id).toBe(created.id);
+    expect(updated.version).toBe(2);
+
+    await expect(svc.putSponsorshipPolicy('tenant_1', {
+      ...basePolicy,
+      mode: 'user_reimburses',
+      requireUserAuthorization: false,
+    })).rejects.toThrow('explicit user authorization');
+  });
+
+  it('stores tenant-scoped multi-network gateway configurations', async () => {
+    const svc = await makeService();
+    const config = {
+      schemaVersion: 'veridex.gateway-config/v1' as const,
+      appId: 'app_1', environment: 'test' as const, name: 'API gateway', state: 'draft' as const,
+      targets: [{
+        network: 'eip155:84532', facilitatorUrl: 'https://facilitator.example.com',
+        payTo: `0x${'1'.repeat(40)}`, asset: `0x${'2'.repeat(40)}`, defaultPrice: '1000',
+      }], schemes: ['exact' as const],
+      upstreamUrl: 'http://localhost:3000', publicBaseUrl: 'http://localhost:3005',
+      allowedMethods: ['GET' as const], updatedBy: 'token_admin',
+    };
+    const created = await svc.createGatewayConfig('tenant_1', config);
+    expect((await svc.listGatewayConfigs('tenant_1', 'app_1', 'test'))[0]?.id).toBe(created.id);
+    expect(await svc.listGatewayConfigs('tenant_2', 'app_1', 'test')).toHaveLength(0);
+    const updated = await svc.updateGatewayConfig('tenant_1', created.id, 'app_1', 'test', { ...config, state: 'active' });
+    expect(updated?.version).toBe(2);
+    const specs = await svc.getGatewayDeploymentSpecs('tenant_1', created.id, 'app_1', 'test');
+    expect(specs).toHaveLength(1);
+    expect(specs?.[0]?.config.network).toBe('eip155:84532');
+    expect(specs?.[0]?.image).toBe('ghcr.io/veridex/multichain-gateway:0.1.0');
+    expect(specs?.[0]?.requiredSecretRefs).toEqual(['DATABASE_URL', 'GATEWAY_MANAGEMENT_TOKEN']);
+    expect(JSON.stringify(specs)).not.toContain('postgresql://');
+    await expect(svc.createGatewayConfig('tenant_1', { ...config, environment: 'live', upstreamUrl: 'http://internal' }))
+      .rejects.toThrow('HTTPS');
+  });
+
+  it('stores scoped replay-resistant charge authorizations', async () => {
+    const svc = await makeService();
+    const keys = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+    const signerPublicKey = Buffer.from(await crypto.subtle.exportKey('spki', keys.publicKey)).toString('base64url');
+    const unsigned: UnsignedChargeAuthorization = {
+      schemaVersion: CHARGE_AUTHORIZATION_VERSION,
+      authorizationId: 'auth_1', quoteId: 'quote_1', tenantId: 'tenant_1', appId: 'app_1',
+      environment: 'test', chain: 'eip155:84532',
+      chargeAsset: 'eip155:84532/slip44:60', maximumCharge: '100', nonce: 'nonce_1',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(), recurring: false,
+      refundPolicyHash: `0x${'11'.repeat(32)}`, termsHash: `0x${'22'.repeat(32)}`,
+      signatureAlgorithm: 'ed25519', signerPublicKey,
+    };
+    const authorization = { ...await createChargeAuthorization(unsigned, keys.privateKey), updatedBy: 'token_admin' };
+    const created = await svc.createChargeAuthorization('tenant_1', authorization);
+    expect(created.resourceType).toBe('charge_authorization');
+    await expect(svc.createChargeAuthorization('tenant_1', {
+      ...authorization, authorizationId: 'auth_tampered', nonce: 'nonce_tampered', maximumCharge: '101',
+    })).rejects.toThrow('signature is invalid');
+    const signAuthorization = async (authorizationId: string, nonce: string) => ({
+      ...await createChargeAuthorization({ ...unsigned, authorizationId, nonce }, keys.privateKey),
+      updatedBy: 'token_admin',
+    });
+    await expect(svc.createChargeAuthorization('tenant_1', await signAuthorization('auth_replay', 'nonce_1')))
+      .rejects.toThrow('already used');
+    const [concurrentAuthorization1, concurrentAuthorization2] = await Promise.all([
+      signAuthorization('auth_create_1', 'nonce_create'),
+      signAuthorization('auth_create_2', 'nonce_create'),
+    ]);
+    const concurrentCreate = await Promise.allSettled([
+      svc.createChargeAuthorization('tenant_1', concurrentAuthorization1),
+      svc.createChargeAuthorization('tenant_1', concurrentAuthorization2),
+    ]);
+    expect(concurrentCreate.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(concurrentCreate.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const consume = (
+      signedAuthorization: typeof authorization,
+      executionId: string,
+      maximumCharge = signedAuthorization.maximumCharge,
+    ) => svc.consumeChargeAuthorization(
+      'tenant_1', 'app_1', signedAuthorization.authorizationId, 'quote_1', signedAuthorization.termsHash, 'test',
+      signedAuthorization.chain, signedAuthorization.chargeAsset, maximumCharge, signedAuthorization.payer,
+      signedAuthorization.nonce, signedAuthorization.expiresAt, signedAuthorization.recurring,
+      signedAuthorization.refundPolicyHash, signedAuthorization.signatureAlgorithm,
+      signedAuthorization.signerPublicKey, signedAuthorization.signature, executionId, 'relayer',
+    );
+    await expect(consume(authorization, 'exec_wrong', '101')).rejects.toThrow('scope mismatch');
+    const consumed = await consume(authorization, 'exec_1');
+    expect(consumed.data.consumedAt).toBeDefined();
+    await expect(consume(authorization, 'exec_2')).rejects.toThrow('already consumed');
+    const retry = await consume(authorization, 'exec_1');
+    expect(retry.version).toBe(consumed.version);
+
+    const authorization2 = await signAuthorization('auth_2', 'nonce_2');
+    await svc.createChargeAuthorization('tenant_1', authorization2);
+    const concurrent = await Promise.allSettled([
+      consume(authorization2, 'exec_3'),
+      consume(authorization2, 'exec_4'),
+    ]);
+    expect(concurrent.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(concurrent.filter((result) => result.status === 'rejected')).toHaveLength(1);
+  });
+
+  it('stores payment resources, publishes Bazaar state, and projects events idempotently', async () => {
+    const svc = await makeService();
+    const resource = await svc.createPaymentResource('tenant_1', {
+      schemaVersion: 'veridex.payment-resource/v1', appId: 'app_1', environment: 'test',
+      gatewayId: 'gateway_1', name: 'Weather API', path: '/weather', methods: ['GET'],
+      network: 'eip155:84532', scheme: 'exact', asset: `0x${'1'.repeat(40)}`,
+      amount: '1000', payTo: `0x${'2'.repeat(40)}`, bazaarStatus: 'draft', updatedBy: 'token_admin',
+    });
+    const published = await svc.publishPaymentResource('tenant_1', 'app_1', resource.id, 'token_admin');
+    expect(published?.data.bazaarStatus).toBe('published');
+    expect(await svc.listPaymentResources('tenant_2', 'app_1')).toHaveLength(0);
+    const event = {
+      schemaVersion: 'veridex.payment-projection/v1' as const, eventId: 'evt_1', eventType: 'payment.settled',
+      tenantId: 'tenant_1', appId: 'app_1', environment: 'test' as const, paymentId: 'pay_1',
+      occurredAt: new Date().toISOString(), data: { amount: '1000' },
+    };
+    const first = await svc.ingestPaymentProjection('tenant_1', event);
+    const duplicate = await svc.ingestPaymentProjection('tenant_1', event);
+    expect(duplicate.id).toBe(first.id);
+  });
+
+  it('stores app-scoped team invitations and prevents duplicate pending access', async () => {
+    const svc = await makeService();
+    const invitation = await svc.createTeamInvitation(
+      'tenant_1', 'app_1', ' Developer@Example.com ', 'developer', 'token_admin',
+    );
+    expect(invitation.data.email).toBe('developer@example.com');
+    expect(invitation.data.status).toBe('pending');
+    expect(await svc.listTeamInvitations('tenant_1', 'app_1')).toHaveLength(1);
+    expect(await svc.listTeamInvitations('tenant_1', 'app_2')).toHaveLength(0);
+    await expect(svc.createTeamInvitation(
+      'tenant_1', 'app_1', 'developer@example.com', 'viewer', 'token_admin',
+    )).rejects.toThrow('already exists');
+    const revoked = await svc.revokeTeamInvitation(
+      'tenant_1', 'app_1', invitation.id, 'token_admin',
+    );
+    expect(revoked?.data.status).toBe('revoked');
+    expect(revoked?.status).toBe('archived');
   });
 
   // ── Tasks ──
