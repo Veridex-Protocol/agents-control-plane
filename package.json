@@ -35,7 +35,7 @@
     "prepublishOnly": "bun run build"
   },
   "peerDependencies": {
-    "@veridex/agents": "0.1.7"
+    "@veridex/agents": "0.1.8"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
@@ -44,7 +44,7 @@
     "pg": "^8.20.0"
   },
   "devDependencies": {
-    "@veridex/agents": "0.1.7",
+    "@veridex/agents": "0.1.8",
     "@types/node": "^20.11.24",
     "tsup": "^8.0.0",
     "tsx": "^4.19.2",
