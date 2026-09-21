@@ -1,6 +1,6 @@
 {
   "name": "@veridex/agents-control-plane",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Enterprise control plane SDK for the Veridex Agent Runtime — policy packs, trace retention, approval workflows, audit export, multi-tenant governance",
   "license": "MIT",
   "author": "Veridex Team",
