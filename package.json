@@ -20,7 +20,7 @@
     "README.md"
   ],
   "bin": {
-    "veridex-control-plane": "./dist/server-entry.mjs"
+    "veridex-control-plane": "dist/server-entry.js"
   },
   "scripts": {
     "build": "tsup",
